@@ -50,6 +50,7 @@ RUN_MIN = int(os.getenv("RUN_MIN", "30"))
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
 WINS_FILE = Path("/data/wins.json")
+SKILL_PATH = Path("skills/xhs_travel_skill.md")
 MY_LOCAL_KEYWORDS = ["马来西亚", "大马", "malaysia", "my", "kl", "吉隆坡", "雪兰莪", "森美兰", "槟城", "怡保", "马六甲", "金马仑", "波德申", "云顶", "东海岸"]
 OVERSEAS_KEYWORDS = ["日本", "韩国", "欧洲", "美国", "泰国", "越南", "巴厘", "新加坡"]
 
@@ -63,6 +64,15 @@ tzinfo = ZoneInfo(TZ)
 def make_content_id(now: datetime) -> str:
     rand4 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
     return now.strftime("%Y%m%d-%H%M") + "-" + rand4
+
+
+def load_skill_text() -> str:
+    try:
+        if SKILL_PATH.exists():
+            return SKILL_PATH.read_text(encoding="utf-8").strip()
+        return ""
+    except Exception:
+        return ""
 
 
 TITLE_PROMPT = """
@@ -451,10 +461,11 @@ def _is_admin_user(user_id: int | None) -> bool:
 
 
 async def generate_note(title: str, angle: str, audience: str) -> tuple[str, bool]:
+    skill_text = load_skill_text()
     resp = client.chat.completions.create(
         model=OPENAI_MODEL_NOTE,
         messages=[
-            {"role": "system", "content": NOTE_SYSTEM},
+            {"role": "system", "content": skill_text or NOTE_SYSTEM},
             {"role": "user", "content": build_note_user_prompt(title, angle, audience)},
         ],
         temperature=0.7,
@@ -554,6 +565,7 @@ def score_item(item: dict) -> dict:
 
 
 async def generate_6_titles(app: Application | None = None) -> list[dict]:
+    skill_text = load_skill_text()
     wins, warning = load_wins()
     if warning:
         log.warning(warning)
@@ -573,7 +585,11 @@ async def generate_6_titles(app: Application | None = None) -> list[dict]:
         messages=[
             {
                 "role": "system",
-                "content": "全部输出必须为中文（小红书语境）。只输出JSON，不要代码块，不要解释。"
+                "content": skill_text or "你是一个小红书旅行增长引擎。",
+            },
+            {
+                "role": "system",
+                "content": "全部输出必须为中文（小红书语境）。只输出JSON，不要代码块。"
             },
             {
                 "role": "user",
