@@ -1,0 +1,13 @@
+app = "xhstravelhelperbot"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TZ = "Asia/Kuala_Lumpur"
+  RUN_HOUR = "21"
+  RUN_MIN = "30"
+  OPENAI_MODEL_TITLES = "gpt-4o-mini"
+
+# No [http_service] needed (worker process)
