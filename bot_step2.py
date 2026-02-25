@@ -51,6 +51,18 @@ ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
 WINS_FILE = Path("/data/wins.json")
 SKILL_PATH = Path("skills/xhs_travel_skill.md")
+SKILLS_DIR = Path("skills")
+SKILL_TEXT_CAP = 16000
+SKILL_PRIORITY_ORDER = [
+    "growth_rules.md",
+    "script_framework.md",
+    "hook_library.md",
+    "series_registry.md",
+    "performance_log.md",
+    "failure_log.md",
+]
+RULE_SKILL_FILES = {"growth_rules.md", "script_framework.md", "hook_library.md"}
+MEMORY_SKILL_FILES = {"performance_log.md", "failure_log.md", "series_registry.md"}
 MY_LOCAL_KEYWORDS = ["马来西亚", "大马", "malaysia", "my", "kl", "吉隆坡", "雪兰莪", "森美兰", "槟城", "怡保", "马六甲", "金马仑", "波德申", "云顶", "东海岸"]
 OVERSEAS_KEYWORDS = ["日本", "韩国", "欧洲", "美国", "泰国", "越南", "巴厘", "新加坡"]
 
@@ -73,6 +85,114 @@ def load_skill_text() -> str:
         return ""
     except Exception:
         return ""
+
+
+def ensure_default_skill_files(skills_dir: str = "skills") -> None:
+    base = Path(skills_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    defaults = {
+        "growth_rules.md": "# Growth Rules\n\n## Placeholder\n- Add growth rules here.\n",
+        "hook_library.md": "# Hook Library\n\n## Placeholder\n- Add proven hook patterns here.\n",
+        "script_framework.md": "# Script Framework\n\n## Placeholder\n- Add script framework notes here.\n",
+        "performance_log.md": "# Performance Log\n\n## Placeholder\n- Add win records and insights here.\n",
+        "failure_log.md": "# Failure Log\n\n## Placeholder\n- Add failed hooks/titles and lessons here.\n",
+        "series_registry.md": "# Series Registry\n\n## Placeholder\n- Add recurring content series notes here.\n",
+    }
+    for name, content in defaults.items():
+        fp = base / name
+        if not fp.exists():
+            fp.write_text(content, encoding="utf-8")
+
+
+def load_skill_texts(skills_dir: str = "skills") -> list[tuple[str, str]]:
+    base = Path(skills_dir)
+    if not base.exists():
+        return []
+    ordered: list[Path] = []
+    for name in SKILL_PRIORITY_ORDER:
+        fp = base / name
+        if fp.exists() and fp.suffix.lower() == ".md":
+            ordered.append(fp)
+    others = sorted(
+        [p for p in base.glob("*.md") if p.name not in {x.name for x in ordered}],
+        key=lambda x: x.name.lower(),
+    )
+    files = ordered + others
+    loaded: list[tuple[str, str]] = []
+    for fp in files:
+        try:
+            text = fp.read_text(encoding="utf-8").strip()
+            if text:
+                loaded.append((fp.name, text))
+        except Exception:
+            log.exception("failed to load skill file: %s", fp)
+
+    if not loaded:
+        return loaded
+
+    kept = list(loaded)
+    protected = set(RULE_SKILL_FILES)
+    while sum(len(t) for _, t in kept) > SKILL_TEXT_CAP:
+        idx = None
+        for i in range(len(kept) - 1, -1, -1):
+            if kept[i][0] not in protected:
+                idx = i
+                break
+        if idx is None:
+            idx = len(kept) - 1
+        kept.pop(idx)
+        if not kept:
+            break
+    return kept
+
+
+def _build_skill_sections(skills: list[tuple[str, str]]) -> tuple[str, str]:
+    system_sections = []
+    context_sections = []
+    for name, text in skills:
+        block = f"=== SKILL: {name} ===\n{text}"
+        if name in RULE_SKILL_FILES:
+            system_sections.append(block)
+        elif name in MEMORY_SKILL_FILES:
+            context_sections.append(block)
+        else:
+            system_sections.append(block)
+
+    if SKILL_PATH.exists() and not any(name == SKILL_PATH.name for name, _ in skills):
+        legacy = load_skill_text()
+        if legacy:
+            system_sections.append(f"=== SKILL: {SKILL_PATH.name} ===\n{legacy}")
+    return "\n\n".join(system_sections).strip(), "\n\n".join(context_sections).strip()
+
+
+def is_valid_hook(title: str) -> bool:
+    return _hook_validation_reason(title)[0]
+
+
+def _hook_validation_reason(title: str) -> tuple[bool, str]:
+    t = (title or "").strip()
+    if len(t) < 10 or len(t) > 32:
+        return False, "length_not_in_10_32"
+    specificity_ok = bool(re.search(r"\d", t)) or any(x in t for x in ["RM", "¥", "元", "%", "分钟", "小时", "天"])
+    if not specificity_ok:
+        return False, "missing_specificity_signal"
+    tension_keywords = ["千万别", "别做", "别买", "别去", "避坑", "踩雷", "坑", "亏", "浪费", "后悔", "被宰", "被骗", "隐藏", "真相", "规则", "别按", "别选", "不要", "别", "错"]
+    has_tension = any(k in t for k in tension_keywords)
+    if not has_tension:
+        return False, "missing_tension_signal"
+    if any(k in t for k in ["分享", "合集", "推荐", "攻略"]) and not has_tension:
+        return False, "generic_filler_without_tension"
+    return True, "ok"
+
+
+def append_failure_log_line(title: str, reason: str, skills_dir: str = "skills") -> None:
+    fp = Path(skills_dir) / "failure_log.md"
+    line = f"- {datetime.now(tzinfo).isoformat()} | rejected_title={title} | reason={reason}\n"
+    try:
+        with fp.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        log.exception("failed to append failure log")
 
 
 TITLE_PROMPT = """
@@ -522,12 +642,19 @@ def _parse_wintext_message(text: str) -> tuple[dict[str, int], str]:
 
 
 async def generate_note(title: str, angle: str, audience: str) -> tuple[str, bool]:
-    skill_text = load_skill_text()
+    skill_pairs = load_skill_texts(str(SKILLS_DIR))
+    system_skills, context_skills = _build_skill_sections(skill_pairs)
+    system_text = NOTE_SYSTEM
+    if system_skills:
+        system_text = f"{NOTE_SYSTEM}\n\n{system_skills}" if NOTE_SYSTEM else system_skills
+    user_prompt = build_note_user_prompt(title, angle, audience)
+    if context_skills:
+        user_prompt = f"{user_prompt}\n\n【参考记忆，仅供参考】\n{context_skills}"
     resp = client.chat.completions.create(
         model=OPENAI_MODEL_NOTE,
         messages=[
-            {"role": "system", "content": skill_text or NOTE_SYSTEM},
-            {"role": "user", "content": build_note_user_prompt(title, angle, audience)},
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_prompt},
         ],
         temperature=0.7,
         max_tokens=NOTE_MAX_TOKENS,
@@ -626,7 +753,8 @@ def score_item(item: dict) -> dict:
 
 
 async def generate_6_titles(app: Application | None = None) -> list[dict]:
-    skill_text = load_skill_text()
+    skill_pairs = load_skill_texts(str(SKILLS_DIR))
+    system_skills, context_skills = _build_skill_sections(skill_pairs)
     wins, warning = load_wins()
     if warning:
         log.warning(warning)
@@ -641,12 +769,18 @@ async def generate_6_titles(app: Application | None = None) -> list[dict]:
         + summarize_wins(wins)
         + "\n\n请严格按本地旅行策略出题。"
     )
+    if context_skills:
+        dynamic_prompt = f"{dynamic_prompt}\n\n【参考记忆，仅供参考】\n{context_skills}"
+
+    system_text = "你是一个小红书旅行增长引擎。"
+    if system_skills:
+        system_text = f"{system_text}\n\n{system_skills}"
     resp = client.chat.completions.create(
         model=MODEL_TITLES,
         messages=[
             {
                 "role": "system",
-                "content": skill_text or "你是一个小红书旅行增长引擎。",
+                "content": system_text,
             },
             {
                 "role": "system",
@@ -674,6 +808,45 @@ async def generate_6_titles(app: Application | None = None) -> list[dict]:
     except Exception as e:
         log.error("JSON parse failed: %s | raw=%s", e, content[:5000])
         raise
+
+
+def _score_and_pick_top2(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    scored = []
+    for it in items:
+        sc = score_item(it)
+        it2 = dict(it)
+        it2["_score"] = sc
+        scored.append(it2)
+    scored.sort(key=lambda x: x["_score"]["total"], reverse=True)
+    return scored, scored[:2]
+
+
+async def generate_validated_top2(app: Application | None = None, max_retries: int = 3) -> tuple[list[dict], list[dict], bool]:
+    best_scored: list[dict] = []
+    best_top2: list[dict] = []
+    best_valid_count = -1
+    for attempt in range(max_retries + 1):
+        items = await generate_6_titles(app)
+        scored, top2 = _score_and_pick_top2(items)
+        valid_count = 0
+        all_valid = True
+        for it in top2:
+            title = (it.get("title") or "").strip()
+            ok, reason = _hook_validation_reason(title)
+            if ok:
+                valid_count += 1
+            else:
+                all_valid = False
+                append_failure_log_line(title, reason, str(SKILLS_DIR))
+                log.warning("title rejected by hook validation: %s | reason=%s", title, reason)
+        if valid_count > best_valid_count:
+            best_valid_count = valid_count
+            best_scored = scored
+            best_top2 = top2
+        if all_valid:
+            return scored, top2, False
+    log.warning("hook validation retries exhausted; using best available attempt")
+    return best_scored, best_top2, True
 
 
 def format_top2_message(content_id: str, top2: list[dict]) -> str:
@@ -711,21 +884,11 @@ async def run_daily_job(app: Application) -> None:
     content_id = make_content_id(now)
     log.info("Running daily job content_id=%s", content_id)
 
-    items = await generate_6_titles(app)
-
-    # score + attach
-    scored = []
-    for it in items:
-        sc = score_item(it)
-        it2 = dict(it)
-        it2["_score"] = sc
-        scored.append(it2)
-
-    # pick top2
-    scored.sort(key=lambda x: x["_score"]["total"], reverse=True)
-    top2 = scored[:2]
+    scored, top2, has_validation_warning = await generate_validated_top2(app)
 
     msg = format_top2_message(content_id, top2)
+    if has_validation_warning:
+        msg = msg + "\n\n⚠️ Hook校验多次未完全通过，已返回最佳候选。"
     await app.bot.send_message(
         chat_id=APPROVAL_CHAT_ID,
         text=msg,
@@ -835,15 +998,7 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         try:
             now = datetime.now(tzinfo)
             new_id = make_content_id(now)
-            items = await generate_6_titles(context.application)
-
-            scored = []
-            for it in items:
-                it2 = dict(it)
-                it2["_score"] = score_item(it)
-                scored.append(it2)
-            scored.sort(key=lambda x: x["_score"]["total"], reverse=True)
-            top2 = scored[:2]
+            scored, top2, has_validation_warning = await generate_validated_top2(context.application)
 
             drafts[new_id] = {
                 "created_at": now.isoformat(),
@@ -853,6 +1008,8 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             }
 
             msg = format_top2_message(new_id, top2)
+            if has_validation_warning:
+                msg = msg + "\n\n⚠️ Hook校验多次未完全通过，已返回最佳候选。"
             await q.edit_message_text(msg, reply_markup=approval_keyboard(new_id), disable_web_page_preview=True)
         except Exception:
             log.exception("regen failed")
@@ -972,6 +1129,7 @@ async def wintext(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    ensure_default_skill_files(str(SKILLS_DIR))
     app = Application.builder().token(TG_TOKEN).build()
 
     # commands / handlers
