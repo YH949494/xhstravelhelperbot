@@ -28,6 +28,7 @@ from telegram.ext import (
 )
 
 from openai import OpenAI
+from skill_learning import analyze_script, parse_learn_script_message, store_learning
 
 load_dotenv()
 
@@ -49,6 +50,8 @@ RUN_HOUR = int(os.getenv("RUN_HOUR", "21"))
 RUN_MIN = int(os.getenv("RUN_MIN", "30"))
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
+ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "").strip()
+ADMIN_USER_IDS = {int(x.strip()) for x in ADMIN_USER_IDS_RAW.split(",") if x.strip().isdigit()}
 WINS_FILE = Path("/data/wins.json")
 SKILL_PATH = Path("skills/xhs_travel_skill.md")
 SKILLS_DIR = Path("skills")
@@ -1128,6 +1131,47 @@ async def wintext(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    user_id = user.id if user else None
+    if not user_id or user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("Unauthorized")
+        return
+
+    msg_text = update.message.text if update.message else ""
+    metadata, script_text = parse_learn_script_message(msg_text or "")
+    if len(script_text) < 200:
+        await update.message.reply_text("Need full script")
+        return
+
+    try:
+        analysis = await asyncio.to_thread(analyze_script, client, script_text, metadata)
+    except Exception:
+        log.exception("learn_script analyze failed")
+        await update.message.reply_text("OpenAI error: failed to analyze script")
+        return
+
+    try:
+        updated_files, script_hash = await asyncio.to_thread(store_learning, metadata, analysis, script_text)
+    except Exception:
+        log.exception("learn_script store failed")
+        await update.message.reply_text("Storage error: failed to save learning")
+        return
+
+    hook_text = str(((analysis.get("hook") or {}).get("text") or "")).strip()
+    platform = str(analysis.get("platform") or "other")
+    content_type = str(analysis.get("content_type") or "other")
+    rules = analysis.get("reusable_rules") or []
+    await update.message.reply_text(
+        "✅ Learned & stored\n"
+        f"platform/type: {platform}/{content_type}\n"
+        f"hook: {hook_text}\n"
+        f"rules added: {len(rules)}\n"
+        f"files: {', '.join(updated_files)}\n"
+        f"script_hash: {script_hash[:10]}"
+    )
+
+
 def main() -> None:
     ensure_default_skill_files(str(SKILLS_DIR))
     app = Application.builder().token(TG_TOKEN).build()
@@ -1137,6 +1181,7 @@ def main() -> None:
     app.add_handler(CommandHandler("win", win))
     app.add_handler(CommandHandler("wins", wins))
     app.add_handler(CommandHandler("wintext", wintext))
+    app.add_handler(CommandHandler("learn_script", learn_script))
     app.add_handler(CallbackQueryHandler(cb_handler))
 
     # scheduler: 21:30 KL daily
