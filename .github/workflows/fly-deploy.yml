@@ -24,7 +24,7 @@ jobs:
             echo "Volume xhstravelhelperbot_data already exists in sin."
           else
             echo "Creating volume xhstravelhelperbot_data in sin..."
-            flyctl volumes create xhstravelhelperbot_data --region sin --size 1 -a xhstravelhelperbot
+            flyctl volumes create xhstravelhelperbot_data --region sin --size 1 --yes -a xhstravelhelperbot
           fi
 
       - name: Deploy
