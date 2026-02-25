@@ -1,0 +1,26 @@
+name: Fly Create Volume (One Time)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create_volume:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@v1
+
+      - name: Create volume
+        run: |
+          flyctl volumes create xhstravelhelperbot_data \
+            --region sin \
+            --size 1 \
+            -a xhstravelhelperbot
+
+      - name: Verify volume
+        run: |
+          flyctl volumes list -a xhstravelhelperbot
