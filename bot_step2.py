@@ -29,6 +29,7 @@ from telegram.ext import (
 
 from openai import OpenAI
 from skill_learning import analyze_script, parse_learn_script_message, store_learning
+from skill_audit import build_skill_audit_message
 
 load_dotenv()
 
@@ -1176,6 +1177,14 @@ async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def skill_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = build_skill_audit_message()
+    if not message:
+        await update.message.reply_text("No skills found yet. Use /learn_script first.")
+        return
+    await update.message.reply_text(message)
+
+
 def main() -> None:
     ensure_default_skill_files(str(SKILLS_DIR))
     app = Application.builder().token(TG_TOKEN).build()
@@ -1186,6 +1195,7 @@ def main() -> None:
     app.add_handler(CommandHandler("wins", wins))
     app.add_handler(CommandHandler("wintext", wintext))
     app.add_handler(CommandHandler("learn_script", learn_script))
+    app.add_handler(CommandHandler("skill_audit", skill_audit))
     app.add_handler(CallbackQueryHandler(cb_handler))
 
     # scheduler: 21:30 KL daily
