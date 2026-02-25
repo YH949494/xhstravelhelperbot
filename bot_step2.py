@@ -77,7 +77,8 @@ cta (must be "Follow / 收藏小红书")
 Constraints:
 - Title must contain at least ONE of: number, savings, time, mistake, hidden tip, comparison.
 - Titles must be specific and actionable.
-Return ONLY a JSON array of 6 objects. No extra text.
+Return ONLY this exact JSON shape: {"items":[...6 objects...]}
+No code fences. No extra text.
 """
 
 
@@ -283,6 +284,18 @@ def _replace_hook(note_text: str, new_hook: str) -> str:
     return "\n".join(lines)
 
 
+def _extract_json(text: str) -> str:
+    s = (text or "").strip()
+    if s.startswith("```"):
+        lines = s.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        s = "\n".join(lines).strip()
+    return s
+
+
 async def generate_note(title: str, angle: str, audience: str) -> tuple[str, bool]:
     resp = client.chat.completions.create(
         model=OPENAI_MODEL_NOTE,
@@ -372,15 +385,20 @@ async def generate_6_titles() -> list[dict]:
             {"role": "system", "content": "You output strict JSON only."},
             {"role": "user", "content": TITLE_PROMPT},
         ],
+        response_format={"type": "json_object"},
         temperature=0.8,
         max_tokens=900,
     )
-    content = resp.choices[0].message.content or "[]"
+    content = resp.choices[0].message.content or "{}"
     try:
         data = json.loads(content)
-        if not isinstance(data, list) or len(data) != 6:
+    except Exception:
+        data = json.loads(_extract_json(content))
+    try:
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or len(items) != 6:
             raise ValueError("Not 6 items")
-        return data
+        return items
     except Exception as e:
         log.error("JSON parse failed: %s | raw=%s", e, content[:5000])
         raise
