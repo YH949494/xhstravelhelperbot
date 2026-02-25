@@ -11,3 +11,7 @@ primary_region = "sin"
   OPENAI_MODEL_TITLES = "gpt-4o-mini"
 
 # No [http_service] needed (worker process)
+
+[mounts]
+  source = "xhstravelhelperbot_data"
+  destination = "/data"
