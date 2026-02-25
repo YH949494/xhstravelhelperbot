@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import asyncio
 import string
 import logging
 from datetime import datetime
@@ -587,8 +588,9 @@ def main() -> None:
     # scheduler: 21:30 KL daily
     scheduler = AsyncIOScheduler(timezone=tzinfo)
     scheduler.add_job(
-        lambda: run_daily_job(app),
+        run_daily_job,
         CronTrigger(hour=RUN_HOUR, minute=RUN_MIN, timezone=tzinfo),
+        args=[app],        
         id="daily_titles",
         replace_existing=True,
         misfire_grace_time=300,
