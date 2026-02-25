@@ -1,13 +1,23 @@
-app = "xhstravelhelperbot"
-primary_region = "sin"
+# fly.toml app configuration file generated for xhstravelhelperbot on 2026-02-25T06:24:43Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'xhstravelhelperbot'
+primary_region = 'sin'
 
 [build]
-  dockerfile = "Dockerfile"
 
-[env]
-  TZ = "Asia/Kuala_Lumpur"
-  RUN_HOUR = "21"
-  RUN_MIN = "30"
-  OPENAI_MODEL_TITLES = "gpt-4o-mini"
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
-# No [http_service] needed (worker process)
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
