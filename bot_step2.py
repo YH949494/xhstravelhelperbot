@@ -4,7 +4,11 @@ import random
 import asyncio
 import string
 import logging
+import re
+import shlex
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -43,6 +47,11 @@ NOTE_MAX_TOKENS = int(os.getenv("NOTE_MAX_TOKENS", "900"))
 TZ = os.getenv("TZ", "Asia/Kuala_Lumpur")
 RUN_HOUR = int(os.getenv("RUN_HOUR", "21"))
 RUN_MIN = int(os.getenv("RUN_MIN", "30"))
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
+WINS_FILE = Path("/data/wins.json")
+MY_LOCAL_KEYWORDS = ["马来西亚", "大马", "malaysia", "my", "kl", "吉隆坡", "雪兰莪", "森美兰", "槟城", "怡保", "马六甲", "金马仑", "波德申", "云顶", "东海岸"]
+OVERSEAS_KEYWORDS = ["日本", "韩国", "欧洲", "美国", "泰国", "越南", "巴厘", "新加坡"]
 
 if not TG_TOKEN or not OPENAI_API_KEY or not APPROVAL_CHAT_ID:
     raise RuntimeError("Missing env: TELEGRAM_BOT_TOKEN / OPENAI_API_KEY / APPROVAL_CHAT_ID")
@@ -88,6 +97,9 @@ TITLE_PROMPT = """
 - 禁止英文标题
 - 返回格式：{"items":[ ...6条... ]}
 - 不要使用 ```json 代码块
+- 选题必须聚焦马来西亚本地旅行（如KL/雪兰莪/槟城/怡保/马六甲/金马仑/波德申/云顶/东海岸）
+- 每条标题至少包含一个元素：RM预算 OR 周末 OR 2天1夜/1天
+- 禁止出现海外目的地关键词：日本/韩国/欧洲/美国/泰国/越南/巴厘/新加坡
 """
 
 
@@ -305,6 +317,139 @@ def _extract_json(text: str) -> str:
     return s
 
 
+def _wins_default() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "updated_at": datetime.now(tzinfo).isoformat(),
+        "items": [],
+    }
+
+
+def _persist_wins_doc(doc: dict[str, Any]) -> bool:
+    data_dir = WINS_FILE.parent
+    if not data_dir.exists():
+        log.error("Wins volume is not mounted: %s", data_dir)
+        return False
+    doc["updated_at"] = datetime.now(tzinfo).isoformat()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    WINS_FILE.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def load_wins() -> tuple[list[dict], str | None]:
+    data_dir = WINS_FILE.parent
+    if not data_dir.exists():
+        log.error("Wins volume is not mounted: %s", data_dir)
+        return [], "⚠️ /data 未挂载，已跳过爆款学习。"
+
+    if not WINS_FILE.exists():
+        _persist_wins_doc(_wins_default())
+        return [], None
+
+    try:
+        doc = json.loads(WINS_FILE.read_text(encoding="utf-8"))
+        items = doc.get("items") if isinstance(doc, dict) else []
+        if not isinstance(items, list):
+            raise ValueError("wins items is not list")
+        return items, None
+    except Exception:
+        log.exception("wins.json corrupted, backing up and resetting")
+        ts = datetime.now(tzinfo).strftime("%Y%m%d_%H%M%S")
+        bak = WINS_FILE.with_name(f"wins.json.bak.{ts}")
+        try:
+            if WINS_FILE.exists():
+                WINS_FILE.replace(bak)
+        except Exception:
+            log.exception("failed to backup corrupted wins file")
+        _persist_wins_doc(_wins_default())
+        return [], f"⚠️ wins.json 已损坏，已备份为 {bak.name} 并重置。"
+
+
+def append_win(item: dict[str, Any]) -> tuple[bool, str | None]:
+    wins, warning = load_wins()
+    doc = _wins_default()
+    doc["items"] = wins
+    doc["items"].append(item)
+    ok = _persist_wins_doc(doc)
+    return ok, warning
+
+
+def summarize_wins(wins: list[dict]) -> str:
+    recent = wins[-30:]
+    if not recent:
+        return "- 最近爆款结构：暂无样本\n- 高频元素：优先测试 RM预算 + 周末/2天1夜\n- 建议延伸：1) 本地低预算 2) 交通避坑 3) 花费拆解 4) 清单模板 5) 冷门短途"
+
+    texts = []
+    for w in recent:
+        texts.append(" ".join([
+            str(w.get("title") or ""),
+            str(w.get("notes") or ""),
+            " ".join(w.get("tags") or []),
+        ]))
+    merged = " ".join(texts)
+
+    rm_hits = re.findall(r"RM\s*\d+", merged, flags=re.IGNORECASE)
+    places = [k for k in ["KL", "雪兰莪", "Selangor", "槟城", "Penang", "怡保", "Ipoh", "马六甲", "Melaka"] if re.search(re.escape(k), merged, flags=re.IGNORECASE)]
+    topics = [k for k in ["2D1N", "3D2N", "周末", "staycation", "森林", "冷门", "避坑", "花费拆解", "清单"] if re.search(re.escape(k), merged, flags=re.IGNORECASE)]
+
+    rm_top = "/".join(rm_hits[:3]) if rm_hits else "RM预算"
+    place_top = "、".join(places[:4]) if places else "KL/雪兰莪"
+    topic_top = "、".join(topics[:6]) if topics else "周末、避坑、花费拆解"
+
+    return (
+        f"- 最近爆款结构：以本地短途 + 具体预算切入，常见金额锚点 {rm_top}。\n"
+        f"- 高频元素：地区 {place_top}；题材 {topic_top}。\n"
+        "- 建议延伸：1) RM100-300周末路线 2) 2天1夜交通组合 3) 酒店/景点避坑 4) 花费拆解模板 5) 冷门森林staycation"
+    )
+
+
+def _parse_win_command(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    payload = (text or "").strip()
+    try:
+        parts = shlex.split(payload)
+    except Exception:
+        return None, "❌ 参数解析失败，请检查引号。"
+    if not parts or not parts[0].startswith("/win"):
+        return None, "❌ 用法：/win <url> saves= likes= comments= follows= title=\"...\" note=\"...\" tags=a,b"
+    if len(parts) < 2 or not parts[1].startswith("http"):
+        return None, "❌ 请提供有效链接：/win <url> ..."
+
+    data: dict[str, Any] = {
+        "source": "xhs",
+        "url": parts[1],
+        "title": "",
+        "notes": "",
+        "metrics": {"saves": None, "likes": None, "comments": None, "follows": None},
+        "tags": [],
+        "region_focus": "MY_LOCAL",
+    }
+
+    for p in parts[2:]:
+        if "=" not in p:
+            continue
+        k, v = p.split("=", 1)
+        key = k.strip().lower()
+        val = v.strip().strip('"').strip("'")
+        if key in ("saves", "likes", "comments", "follows"):
+            data["metrics"][key] = int(val) if val.isdigit() else None
+        elif key == "title":
+            data["title"] = val
+        elif key in ("note", "notes"):
+            data["notes"] = val
+        elif key == "tags":
+            data["tags"] = [x.strip() for x in val.split(",") if x.strip()]
+
+    now = datetime.now(tzinfo)
+    rand4 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    data["id"] = f"win_{now.strftime('%Y%m%d_%H%M%S')}_{rand4}"
+    data["created_at"] = now.isoformat()
+    return data, None
+
+
+def _is_admin_user(user_id: int | None) -> bool:
+    return bool(user_id and ADMIN_IDS and user_id in ADMIN_IDS)
+
+
 async def generate_note(title: str, angle: str, audience: str) -> tuple[str, bool]:
     resp = client.chat.completions.create(
         model=OPENAI_MODEL_NOTE,
@@ -371,13 +516,34 @@ def score_item(item: dict) -> dict:
     if has_any(title, ["准备", "带什么", "买什么", "用什么", "订"]):
         exec_score += 4
 
+    has_local = has_any(title + " " + angle + " " + audience, MY_LOCAL_KEYWORDS)
+    has_budget_or_duration = has_any(title + " " + angle, ["rm", "周末", "2天1夜", "1天", "2d1n", "3d2n"])
+    has_overseas = has_any(title + " " + angle + " " + audience, [x.lower() for x in OVERSEAS_KEYWORDS])
+
+    if has_overseas:
+        return {
+            "save": 0,
+            "follow": 0,
+            "clarity": 0,
+            "exec": 0,
+            "total": 0,
+        }
+
+    local_bonus = 0
+    if has_local and has_any(title + " " + angle, ["rm"]):
+        local_bonus += 6
+    elif has_local and has_budget_or_duration:
+        local_bonus += 4
+    elif has_local:
+        local_bonus += 2
+
     # cap each to 0-10
     save_score = min(save_score, 10)
     follow_score = min(follow_score, 10)
     clarity_score = min(clarity_score, 10)
     exec_score = min(exec_score, 10)
 
-    total = save_score + follow_score + clarity_score + exec_score
+    total = save_score + follow_score + clarity_score + exec_score + local_bonus
     return {
         "save": save_score,
         "follow": follow_score,
@@ -387,7 +553,21 @@ def score_item(item: dict) -> dict:
     }
 
 
-async def generate_6_titles() -> list[dict]:
+async def generate_6_titles(app: Application | None = None) -> list[dict]:
+    wins, warning = load_wins()
+    if warning:
+        log.warning(warning)
+        if app:
+            try:
+                await app.bot.send_message(chat_id=APPROVAL_CHAT_ID, text=warning)
+            except Exception:
+                log.exception("failed to send wins warning")
+    dynamic_prompt = (
+        TITLE_PROMPT
+        + "\n\n【近期爆款学习摘要】\n"
+        + summarize_wins(wins)
+        + "\n\n请严格按本地旅行策略出题。"
+    )
     resp = client.chat.completions.create(
         model=MODEL_TITLES,
         messages=[
@@ -397,7 +577,7 @@ async def generate_6_titles() -> list[dict]:
             },
             {
                 "role": "user",
-                "content": TITLE_PROMPT
+                "content": dynamic_prompt
             },
         ],
         response_format={"type": "json_object"},
@@ -454,7 +634,7 @@ async def run_daily_job(app: Application) -> None:
     content_id = make_content_id(now)
     log.info("Running daily job content_id=%s", content_id)
 
-    items = await generate_6_titles()
+    items = await generate_6_titles(app)
 
     # score + attach
     scored = []
@@ -578,7 +758,7 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         try:
             now = datetime.now(tzinfo)
             new_id = make_content_id(now)
-            items = await generate_6_titles()
+            items = await generate_6_titles(context.application)
 
             scored = []
             for it in items:
@@ -611,11 +791,63 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def win(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not ADMIN_IDS:
+        await update.message.reply_text("❌ 请先设置 ADMIN_IDS。")
+        return
+    if not _is_admin_user(user.id if user else None):
+        await update.message.reply_text("❌ 无权限。")
+        return
+
+    item, err = _parse_win_command(update.message.text or "")
+    if err:
+        await update.message.reply_text(err)
+        return
+    ok, warning = append_win(item)
+    if warning:
+        await update.message.reply_text(warning)
+    if ok:
+        await update.message.reply_text(f"✅ 已记录爆款样本：{item['id']}")
+    else:
+        await update.message.reply_text("❌ 写入失败：请检查 /data volume 挂载。")
+
+
+async def wins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not ADMIN_IDS:
+        await update.message.reply_text("❌ 请先设置 ADMIN_IDS。")
+        return
+    if not _is_admin_user(user.id if user else None):
+        await update.message.reply_text("❌ 无权限。")
+        return
+
+    items, warning = load_wins()
+    if warning:
+        await update.message.reply_text(warning)
+    last10 = items[-10:]
+    if not last10:
+        await update.message.reply_text("暂无爆款样本。")
+        return
+    lines = ["📚 最近 10 条爆款样本："]
+    for it in reversed(last10):
+        m = it.get("metrics") or {}
+        lines.append(
+            f"• {it.get('id','-')}\n"
+            f"  {it.get('url','')}\n"
+            f"  saves={m.get('saves')} likes={m.get('likes')}\n"
+            f"  note={it.get('notes','')[:60]}"
+        )
+    await update.message.reply_text("\n".join(lines), disable_web_page_preview=True)
+
+
 def main() -> None:
     app = Application.builder().token(TG_TOKEN).build()
 
     # commands / handlers
     app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("win", win))
+    app.add_handler(CommandHandler("wins", wins))
     app.add_handler(CallbackQueryHandler(cb_handler))
 
     # scheduler: 21:30 KL daily
