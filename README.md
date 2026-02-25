@@ -12,3 +12,20 @@ Edit skill and memory markdown files in `skills/*.md`.
 - `failure_log.md`: rejected hooks/titles and failure notes.
 
 Skill loading is deterministic: rules/framework/hook files load before series and logs, and logs are injected as reference context after rules.
+
+## Learn Script Command
+
+Set `ADMIN_USER_IDS` (comma-separated Telegram user IDs) to allow `/learn_script`.
+
+Usage:
+
+```
+/learn_script
+platform: xhs
+type: cost_breakdown
+performance: 3.2k saves / 210 comments
+
+[full script content...]
+```
+
+The bot analyzes the script via OpenAI and appends extracted hook/rules into `skills/*.md` without storing the full script text.
