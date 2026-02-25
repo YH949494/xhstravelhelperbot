@@ -342,7 +342,9 @@ def _persist_wins_doc(doc: dict[str, Any]) -> bool:
         return False
     doc["updated_at"] = datetime.now(tzinfo).isoformat()
     data_dir.mkdir(parents=True, exist_ok=True)
-    WINS_FILE.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_file = WINS_FILE.with_name(f"{WINS_FILE.name}.tmp")
+    tmp_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_file.replace(WINS_FILE)
     return True
 
 
@@ -458,6 +460,65 @@ def _parse_win_command(text: str) -> tuple[dict[str, Any] | None, str | None]:
 
 def _is_admin_user(user_id: int | None) -> bool:
     return bool(user_id and ADMIN_IDS and user_id in ADMIN_IDS)
+
+
+async def summarize_script_for_learning(text: str) -> dict:
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL_NOTE,
+        messages=[
+            {"role": "system", "content": "你是一个旅行内容结构分析引擎。你不会改写内容，只提炼结构模式。"},
+            {
+                "role": "user",
+                "content": (
+                    "分析以下小红书旅行脚本，提炼：\n"
+                    "1) 标题结构公式\n"
+                    "2) Hook类型\n"
+                    "3) 决策框架\n"
+                    "4) 情绪触发点\n"
+                    "5) 可复用信息结构\n"
+                    "6) 5个延伸角度\n"
+                    "返回JSON对象：\n"
+                    "{\n"
+                    " 'title_formula': '',\n"
+                    " 'hook_type': '',\n"
+                    " 'decision_frame': '',\n"
+                    " 'emotional_trigger': '',\n"
+                    " 'info_pattern': '',\n"
+                    " 'topic_cluster': []\n"
+                    "}\n\n"
+                    f"脚本文本：\n{text}"
+                ),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=600,
+    )
+    content = (resp.choices[0].message.content or "{}").strip()
+    data = json.loads(_extract_json(content))
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_wintext_message(text: str) -> tuple[dict[str, int], str]:
+    raw = (text or "").strip()
+    if not raw:
+        return {}, ""
+    lines = raw.splitlines()
+    first = lines[0].strip()
+    body = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+
+    metrics: dict[str, int] = {}
+    for key in ("saves", "likes", "comments", "follows"):
+        m = re.search(rf"{key}\s*=\s*(\d+)", first, flags=re.IGNORECASE)
+        if m:
+            metrics[key] = int(m.group(1))
+
+    if not body:
+        if first.startswith("/wintext"):
+            body = first[len("/wintext"):].strip()
+        else:
+            body = first
+    return metrics, body
 
 
 async def generate_note(title: str, angle: str, audience: str) -> tuple[str, bool]:
@@ -857,6 +918,59 @@ async def wins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), disable_web_page_preview=True)
 
 
+async def wintext(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not ADMIN_IDS:
+        await update.message.reply_text("❌ 请先设置 ADMIN_IDS。")
+        return
+    if not _is_admin_user(user.id if user else None):
+        await update.message.reply_text("❌ 无权限。")
+        return
+
+    msg_text = update.message.text if update.message else ""
+    metrics, script_text = _parse_wintext_message(msg_text or "")
+    if len(script_text) < 200:
+        await update.message.reply_text("❌ 脚本文本过短，至少需要 200 字。")
+        return
+
+    try:
+        learning = await summarize_script_for_learning(script_text)
+    except Exception:
+        log.exception("wintext summarize failed")
+        await update.message.reply_text("❌ 学习失败：OpenAI 请求异常，请稍后重试。")
+        return
+
+    now = datetime.now(tzinfo)
+    rand4 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    item = {
+        "id": f"win_{now.strftime('%Y%m%d_%H%M%S')}_{rand4}",
+        "created_at": now.isoformat(),
+        "source": "manual_script",
+        "raw_length": len(script_text),
+        "metrics": metrics,
+        "learning": learning,
+    }
+    ok, warning = append_win(item)
+    if warning:
+        await update.message.reply_text(warning)
+    if not ok:
+        await update.message.reply_text("❌ 写入失败：请检查 /data volume 挂载。")
+        return
+
+    items, _ = load_wins()
+    title_formula = str((learning or {}).get("title_formula") or "-")
+    topic_cluster = (learning or {}).get("topic_cluster") or []
+    if not isinstance(topic_cluster, list):
+        topic_cluster = []
+    topic_text = "、".join(str(x) for x in topic_cluster[:5]) if topic_cluster else "-"
+    await update.message.reply_text(
+        "✅ 已学习结构\n"
+        f"标题公式: {title_formula}\n"
+        f"延伸角度: {topic_text}\n"
+        f"当前累计样本: {len(items)} 条"
+    )
+
+
 def main() -> None:
     app = Application.builder().token(TG_TOKEN).build()
 
@@ -864,6 +978,7 @@ def main() -> None:
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("win", win))
     app.add_handler(CommandHandler("wins", wins))
+    app.add_handler(CommandHandler("wintext", wintext))
     app.add_handler(CallbackQueryHandler(cb_handler))
 
     # scheduler: 21:30 KL daily
