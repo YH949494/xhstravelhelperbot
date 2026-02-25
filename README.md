@@ -15,7 +15,9 @@ Skill loading is deterministic: rules/framework/hook files load before series an
 
 ## Learn Script Command
 
-Set `ADMIN_USER_IDS` (comma-separated Telegram user IDs) to allow `/learn_script`.
+`/learn_script` only works in Telegram groups/supergroups.
+
+Optional: set `ALLOWED_GROUP_CHAT_IDS` (comma-separated group chat IDs) to restrict which groups can use it.
 
 Usage:
 

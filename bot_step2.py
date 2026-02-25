@@ -50,8 +50,10 @@ RUN_HOUR = int(os.getenv("RUN_HOUR", "21"))
 RUN_MIN = int(os.getenv("RUN_MIN", "30"))
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
-ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "").strip()
-ADMIN_USER_IDS = {int(x.strip()) for x in ADMIN_USER_IDS_RAW.split(",") if x.strip().isdigit()}
+ALLOWED_GROUP_CHAT_IDS_RAW = os.getenv("ALLOWED_GROUP_CHAT_IDS", "").strip()
+ALLOWED_GROUP_CHAT_IDS = {
+    int(x.strip()) for x in ALLOWED_GROUP_CHAT_IDS_RAW.split(",") if x.strip().lstrip("-").isdigit()
+}
 WINS_FILE = Path("/data/wins.json")
 SKILL_PATH = Path("skills/xhs_travel_skill.md")
 SKILLS_DIR = Path("skills")
@@ -1132,10 +1134,12 @@ async def wintext(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    user_id = user.id if user else None
-    if not user_id or user_id not in ADMIN_USER_IDS:
-        await update.message.reply_text("Unauthorized")
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("❌ Please use /learn_script in the group.")
+        return
+    if ALLOWED_GROUP_CHAT_IDS and chat.id not in ALLOWED_GROUP_CHAT_IDS:
+        await update.message.reply_text("❌ This group is not allowed.")
         return
 
     msg_text = update.message.text if update.message else ""
