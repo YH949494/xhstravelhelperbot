@@ -6,8 +6,8 @@ primary_region = "sin"
 
 [env]
   TZ = "Asia/Kuala_Lumpur"
-  RUN_HOUR = "22"
-  RUN_MIN = "07"
+  RUN_HOUR = "19"
+  RUN_MIN = "00"
   OPENAI_MODEL_TITLES = "gpt-4o-mini"
 
 # No [http_service] needed (worker process)
