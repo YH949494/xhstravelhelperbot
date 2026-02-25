@@ -56,29 +56,38 @@ def make_content_id(now: datetime) -> str:
     return now.strftime("%Y%m%d-%H%M") + "-" + rand4
 
 
-TITLE_PROMPT = """You are a Smart Travel Growth Title Engine for XiaoHongShu.
-Creator positioning: smart traveler, cost-aware, efficiency optimizer, hack-focused, decision-helper.
-Never produce: generic diary, emotional storytelling, aesthetic-only content.
+TITLE_PROMPT = """
+你是一个小红书旅行增长标题生成引擎。
 
-Task:
-Generate exactly 6 candidate XiaoHongShu travel post ideas.
-Distribute as:
-- 2 Growth (maximize reach/saves)
-- 2 Conversion (maximize follow)
-- 2 Trust (cost breakdown / avoid mistakes / checklist)
+创作者定位：
+- 聪明旅行者
+- 成本敏感
+- 效率优化
+- 旅行hack分享者
+- 决策辅助型内容
 
-For EACH item, output JSON with keys:
-bucket (growth|conversion|trust),
-title,
-angle,
-target_audience,
-cta (must be "Follow / 收藏小红书")
+任务：
+生成 6 个小红书选题。
 
-Constraints:
-- Title must contain at least ONE of: number, savings, time, mistake, hidden tip, comparison.
-- Titles must be specific and actionable.
-Return ONLY this exact JSON shape: {"items":[...6 objects...]}
-No code fences. No extra text.
+分布要求：
+- 2 条 增长型（高收藏/高传播）
+- 2 条 转化型（提升关注）
+- 2 条 信任型（花费拆解/避坑/清单）
+
+每条必须输出 JSON 对象字段：
+- bucket (growth|conversion|trust)
+- title（中文标题，适合小红书）
+- angle（中文，具体角度）
+- target_audience（中文）
+- cta（固定为：Follow / 收藏小红书）
+
+硬性规则：
+- 标题必须是中文
+- 必须包含数字 / 金额 / 时间 / 对比 / 避坑 等至少一个
+- 必须具体，不允许泛泛而谈
+- 禁止英文标题
+- 返回格式：{"items":[ ...6条... ]}
+- 不要使用 ```json 代码块
 """
 
 
@@ -382,8 +391,14 @@ async def generate_6_titles() -> list[dict]:
     resp = client.chat.completions.create(
         model=MODEL_TITLES,
         messages=[
-            {"role": "system", "content": "You output strict JSON only."},
-            {"role": "user", "content": TITLE_PROMPT},
+            {
+                "role": "system",
+                "content": "全部输出必须为中文（小红书语境）。只输出JSON，不要代码块，不要解释。"
+            },
+            {
+                "role": "user",
+                "content": TITLE_PROMPT
+            },
         ],
         response_format={"type": "json_object"},
         temperature=0.8,
