@@ -7,12 +7,25 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@v1
 
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Ensure volume exists (SIN)
+        run: |
+          set -e
+          echo "Checking volumes..."
+          flyctl volumes list -a xhstravelhelperbot || true
+
+          if flyctl volumes list -a xhstravelhelperbot | grep -qE '^\s*xhstravelhelperbot_data\s+sin\s+'; then
+            echo "Volume xhstravelhelperbot_data already exists in sin."
+          else
+            echo "Creating volume xhstravelhelperbot_data in sin..."
+            flyctl volumes create xhstravelhelperbot_data --region sin --size 1 -a xhstravelhelperbot
+          fi
 
       - name: Deploy
-        run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only -a xhstravelhelperbot
