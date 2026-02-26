@@ -25,6 +25,8 @@ jobs:
           flyctl volumes destroy -y vol_4o58l2pwj6m9eqpv -a xhstravelhelperbot
           flyctl volumes destroy -y vol_vje2x9j8k8n13nx4 -a xhstravelhelperbot
           flyctl volumes destroy -y vol_vgjqxod3oq58yp0v -a xhstravelhelperbot
-          flyctl volumes destroy -y vol_vwj93w3mjxygg1mr -a xhstravelhelperbot          
+          flyctl volumes destroy -y vol_vwj93w3mjxygg1mr -a xhstravelhelperbot  
+          flyctl volumes destroy -y vol_r6362jx1e0nemn1r -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_v3l826ko9q3j2owv -a xhstravelhelperbot            
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
