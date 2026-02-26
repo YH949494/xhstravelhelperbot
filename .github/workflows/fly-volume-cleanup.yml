@@ -1,0 +1,28 @@
+name: Fly Volume Cleanup (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: List volumes
+        run: flyctl volumes list -a xhstravelhelperbot
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # ⚠️ Delete ONLY the orphan volumes (ATTACHED = "-")
+      # Replace the vol_... IDs below with your orphan volume IDs
+      - name: Destroy orphan volumes
+        run: |
+          flyctl volumes destroy -y vol_rk13jeed18z0knk4 -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_vz5odlj3l0lp19qv -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_493jom7510952094 -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_vl67km1e82l3w2ov -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_4o58l2pwj6m9eqpv -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_vje2x9j8k8n13hx4 -a xhstravelhelperbot
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
