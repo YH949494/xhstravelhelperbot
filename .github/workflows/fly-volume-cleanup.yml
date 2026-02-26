@@ -23,7 +23,7 @@ jobs:
           flyctl volumes destroy -y vol_493jom7510952094 -a xhstravelhelperbot
           flyctl volumes destroy -y vol_vl67km1e82l3w2ov -a xhstravelhelperbot
           flyctl volumes destroy -y vol_4o58l2pwj6m9eqpv -a xhstravelhelperbot
-          flyctl volumes destroy -y vol_vje2x9j8k8n13hx4 -a xhstravelhelperbot
+          flyctl volumes destroy -y vol_vje2x9j8k8n13nx4 -a xhstravelhelperbot
           flyctl volumes destroy -y vol_vgjqxod3oq58yp0v -a xhstravelhelperbot
           flyctl volumes destroy -y vol_vwj93w3mjxygg1mr -a xhstravelhelperbot          
         env:
