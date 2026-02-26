@@ -37,7 +37,9 @@ The bot analyzes the script via OpenAI and stores structured learning in MongoDB
 Set the following environment variables for persistent learning storage:
 
 - `MONGODB_URI` (required), for example `mongodb+srv://USER:PASS@cluster0.xxx.mongodb.net/?retryWrites=true&w=majority`
-- `MONGODB_DB` (optional, default: `referral_bot`)
+- `MONGODB_DB` (optional, default: `referral_bot`) for referral bot data
+- `SKILLS_DB` (optional, default: `xhs_travel`) for skills/learning collections
+- `SKILLS_MONGO_URI` (optional, defaults to `MONGODB_URI`)
 - `SKILLS_WRITE_FILES` (optional, default: `0`; local `skills/*.md` writes are disabled by default)
 
-`/learn_script` and `/skill_audit` now read/write MongoDB collections (`xhs_skill_ingests`, `xhs_skill_rules`, `xhs_skill_logs`) in the same DB used by referral bot. If `MONGODB_URI` is missing, both commands return `DB unavailable: missing MONGODB_URI`.
+`/learn_script` and `/skill_audit` read/write MongoDB collections (`xhs_skill_ingests`, `xhs_skill_rules`, `xhs_skill_logs`) in `SKILLS_DB` (default `xhs_travel`). Referral bot keeps using `MONGODB_DB` unchanged. If both `SKILLS_MONGO_URI` and `MONGODB_URI` are missing, both commands return `DB unavailable: missing MONGODB_URI`.

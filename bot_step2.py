@@ -1182,7 +1182,7 @@ async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     new_rules = int(store_result.get("new_rules") or 0)
     updated_rules = int(store_result.get("updated_rules") or 0)
     await update.message.reply_text(
-        "✅ Learned & stored (MongoDB: referral_bot)\n"
+        f"✅ Learned & stored (MongoDB: {os.getenv('SKILLS_DB', 'xhs_travel').strip() or 'xhs_travel'})\n"
         f"platform/type: {platform}/{content_type}\n"
         f"hook: {hook_text}\n"
         f"rules processed: {rules_processed} (new: {new_rules}, updated: {updated_rules})\n"

@@ -6,13 +6,14 @@ from pymongo import DESCENDING, MongoClient
 from pymongo.collection import Collection
 from pymongo.database import Database
 
+from skills_store import get_skills_collection, get_skills_db
+
 log = logging.getLogger("db_atlas")
 
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
-MONGODB_DB = os.getenv("MONGODB_DB", "referral_bot").strip() or "referral_bot"
+SKILLS_MONGO_URI = os.getenv("SKILLS_MONGO_URI", "").strip() or MONGODB_URI
 
 _client: MongoClient | None = None
-_db: Database | None = None
 _init_error: str | None = None
 
 
@@ -21,20 +22,19 @@ def now_utc_iso() -> str:
 
 
 def _init_client() -> None:
-    global _client, _db, _init_error
+    global _client, _init_error
     if _client is not None or _init_error is not None:
         return
-    if not MONGODB_URI:
+    if not SKILLS_MONGO_URI:
         _init_error = "missing MONGODB_URI"
         return
     try:
         _client = MongoClient(
-            MONGODB_URI,
+            SKILLS_MONGO_URI,
             serverSelectionTimeoutMS=8000,
             connectTimeoutMS=8000,
             socketTimeoutMS=8000,
         )
-        _db = _client[MONGODB_DB]
     except Exception:
         log.exception("mongodb client init failed")
         _init_error = "DB unavailable"
@@ -42,14 +42,20 @@ def _init_client() -> None:
 
 def get_db() -> Database | None:
     _init_client()
-    return _db
+    if _client is None:
+        return None
+    return get_skills_db(_client)
 
 
 def get_cols() -> tuple[Collection, Collection, Collection] | None:
-    db = get_db()
-    if db is None:
+    _init_client()
+    if _client is None:
         return None
-    return db["xhs_skill_ingests"], db["xhs_skill_rules"], db["xhs_skill_logs"]
+    return (
+        get_skills_collection(_client, "xhs_skill_ingests"),
+        get_skills_collection(_client, "xhs_skill_rules"),
+        get_skills_collection(_client, "xhs_skill_logs"),
+    )
 
 
 def get_db_error() -> str | None:
