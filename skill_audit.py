@@ -1,79 +1,4 @@
-from pathlib import Path
-
-SKILLS_DIR = Path("skills")
-AUDIT_FILES = [
-    "hooks.md",
-    "cost_breakdown.md",
-    "avoid_pitfalls.md",
-    "local_weekend.md",
-    "booking_strategy.md",
-    "tools.md",
-    "misc.md",
-]
-
-
-def _read_lines(path: Path) -> list[str]:
-    try:
-        return path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return []
-
-
-def _count_bullets(lines: list[str]) -> int:
-    return sum(1 for line in lines if line.lstrip().startswith(("-", "•")))
-
-
-def _split_entries(text: str) -> list[str]:
-    normalized = text.replace("\r\n", "\n")
-    if "\n## " not in normalized and not normalized.lstrip().startswith("## "):
-        return []
-    chunks = [chunk.strip() for chunk in normalized.split("\n## ") if chunk.strip()]
-    if normalized.lstrip().startswith("## ") and chunks:
-        chunks[0] = f"## {chunks[0]}"
-    return chunks
-
-
-def _first_value_line(entry: str, key: str) -> str:
-    key_prefix = f"- {key}:"
-    for line in entry.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(key_prefix):
-            return stripped[len(key_prefix):].strip()
-    return ""
-
-
-def _first_non_empty(entry: str) -> str:
-    for line in entry.splitlines():
-        stripped = line.strip().lstrip("- ").strip()
-        if stripped and not stripped.startswith("## "):
-            return stripped
-    return "(empty)"
-
-
-def _latest_win_lines(path: Path, limit: int = 5) -> list[str]:
-    if not path.exists():
-        return []
-    entries = _split_entries(path.read_text(encoding="utf-8"))
-    out: list[str] = []
-    for entry in reversed(entries):
-        hook = _first_value_line(entry, "hook")
-        out.append(hook if hook else _first_non_empty(entry))
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _latest_failure_lines(path: Path, limit: int = 3) -> list[str]:
-    if not path.exists():
-        return []
-    entries = _split_entries(path.read_text(encoding="utf-8"))
-    out: list[str] = []
-    for entry in reversed(entries):
-        value = _first_value_line(entry, "do_not_learn")
-        out.append(value if value else _first_non_empty(entry))
-        if len(out) >= limit:
-            break
-    return out
+from db_atlas import get_cols
 
 
 def _truncate(text: str, max_len: int = 3900) -> str:
@@ -82,40 +7,83 @@ def _truncate(text: str, max_len: int = 3900) -> str:
     return text[: max_len - len("\n…(truncated)")].rstrip() + "\n…(truncated)"
 
 
+def _short(text: str, size: int = 80) -> str:
+    t = (text or "").strip().replace("\n", " ")
+    if len(t) <= size:
+        return t
+    return t[: size - 1].rstrip() + "…"
+
+
 def build_skill_audit_message() -> str | None:
-    if not SKILLS_DIR.exists() or not SKILLS_DIR.is_dir():
+    cols = get_cols()
+    if cols is None:
         return None
 
-    lines: list[str] = ["Skill audit", ""]
+    skill_ingests, skill_rules, skill_logs = cols
 
-    total_rules = 0
-    lines.append("Files:")
-    for name in AUDIT_FILES:
-        path = SKILLS_DIR / name
-        file_lines = _read_lines(path) if path.exists() else []
-        bullet_count = _count_bullets(file_lines)
-        total_rules += bullet_count
-        exists = "yes" if path.exists() else "no"
-        lines.append(f"- {name}: exists={exists}, lines={len(file_lines)}, bullets={bullet_count}")
+    total_ingests = skill_ingests.count_documents({})
+    total_rules = skill_rules.count_documents({})
 
-    lines.append("")
-    lines.append(f"Total rules learned (approx): {total_rules}")
+    top_types = list(
+        skill_rules.aggregate(
+            [
+                {"$group": {"_id": "$content_type", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 5},
+            ]
+        )
+    )
 
-    win_lines = _latest_win_lines(SKILLS_DIR / "win_log.md", limit=5)
-    lines.append("")
-    lines.append("Latest wins:")
-    if win_lines:
-        for item in win_lines:
-            lines.append(f"- {item}")
+    top_rules = list(skill_rules.find({}, {"rule": 1, "seen_count": 1}).sort("seen_count", -1).limit(5))
+    latest_wins = list(
+        skill_logs.find({"log_type": "win"}, {"created_at_utc": 1, "summary": 1, "hook_text": 1})
+        .sort("created_at_utc", -1)
+        .limit(5)
+    )
+    latest_failures = list(
+        skill_logs.find({"log_type": "failure"}, {"created_at_utc": 1, "do_not_learn": 1})
+        .sort("created_at_utc", -1)
+        .limit(3)
+    )
+
+    lines: list[str] = [
+        "Skill audit (MongoDB)",
+        "",
+        f"Total ingests: {total_ingests}",
+        f"Total unique rules: {total_rules}",
+        "",
+        "Top content_type by rule count:",
+    ]
+
+    if top_types:
+        for item in top_types:
+            lines.append(f"- {item.get('_id') or 'unknown'}: {item.get('count', 0)}")
     else:
         lines.append("- (none)")
 
-    fail_lines = _latest_failure_lines(SKILLS_DIR / "failure_log.md", limit=3)
-    lines.append("")
-    lines.append("Latest failures:")
-    if fail_lines:
-        for item in fail_lines:
-            lines.append(f"- {item}")
+    lines.extend(["", "Top rules by seen_count:"])
+    if top_rules:
+        for item in top_rules:
+            lines.append(f"- [{item.get('seen_count', 0)}] {_short(str(item.get('rule') or ''))}")
+    else:
+        lines.append("- (none)")
+
+    lines.extend(["", "Latest 5 wins:"])
+    if latest_wins:
+        for item in latest_wins:
+            ts = item.get("created_at_utc", "")
+            summary = _short(str(item.get("summary") or item.get("hook_text") or ""), 100)
+            lines.append(f"- {ts} | {summary}")
+    else:
+        lines.append("- (none)")
+
+    lines.extend(["", "Latest 3 failures:"])
+    if latest_failures:
+        for item in latest_failures:
+            ts = item.get("created_at_utc", "")
+            dnl = item.get("do_not_learn") or []
+            first = _short(str(dnl[0] if dnl else ""), 100) or "(empty)"
+            lines.append(f"- {ts} | {first}")
     else:
         lines.append("- (none)")
 
