@@ -28,6 +28,7 @@ from telegram.ext import (
 )
 
 from openai import OpenAI
+from db_atlas import ensure_indexes, get_db_error, ping
 from skill_learning import analyze_script, parse_learn_script_message, store_learning
 from skill_audit import build_skill_audit_message
 
@@ -1149,6 +1150,11 @@ async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Need full script")
         return
 
+    db_error = get_db_error()
+    if db_error:
+        await update.message.reply_text(db_error)
+        return
+
     try:
         analysis = await asyncio.to_thread(analyze_script, client, script_text, metadata)
     except Exception:
@@ -1157,7 +1163,12 @@ async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        updated_files, script_hash = await asyncio.to_thread(store_learning, metadata, analysis, script_text)
+        tg = {
+            "chat_id": int(chat.id),
+            "user_id": int(update.effective_user.id) if update.effective_user else 0,
+            "message_id": int(update.message.message_id) if update.message else 0,
+        }
+        store_result = await asyncio.to_thread(store_learning, metadata, analysis, script_text, tg)
     except Exception:
         log.exception("learn_script store failed")
         await update.message.reply_text("Storage error: failed to save learning")
@@ -1166,27 +1177,38 @@ async def learn_script(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     hook_text = str(((analysis.get("hook") or {}).get("text") or "")).strip()
     platform = str(analysis.get("platform") or "other")
     content_type = str(analysis.get("content_type") or "other")
-    rules = analysis.get("reusable_rules") or []
+    script_hash = str(store_result.get("script_hash") or "")
+    rules_processed = int(store_result.get("rules_processed") or 0)
+    new_rules = int(store_result.get("new_rules") or 0)
+    updated_rules = int(store_result.get("updated_rules") or 0)
     await update.message.reply_text(
-        "✅ Learned & stored\n"
+        "✅ Learned & stored (MongoDB: referral_bot)\n"
         f"platform/type: {platform}/{content_type}\n"
         f"hook: {hook_text}\n"
-        f"rules added: {len(rules)}\n"
-        f"files: {', '.join(updated_files)}\n"
+        f"rules processed: {rules_processed} (new: {new_rules}, updated: {updated_rules})\n"
+        "db: xhs_skill_ingests, xhs_skill_rules, xhs_skill_logs\n"
         f"script_hash: {script_hash[:10]}"
     )
 
 
 async def skill_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    db_error = get_db_error()
+    if db_error:
+        await update.message.reply_text(db_error)
+        return
     message = build_skill_audit_message()
     if not message:
-        await update.message.reply_text("No skills found yet. Use /learn_script first.")
+        await update.message.reply_text("DB unavailable")
         return
     await update.message.reply_text(message)
 
 
 def main() -> None:
     ensure_default_skill_files(str(SKILLS_DIR))
+    if ping():
+        ensure_indexes()
+    else:
+        log.warning("MongoDB ping failed at startup")
     app = Application.builder().token(TG_TOKEN).build()
 
     # commands / handlers
