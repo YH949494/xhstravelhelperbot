@@ -292,7 +292,6 @@ def store_learning(metadata: dict[str, str], analysis: dict[str, Any], script_te
                 "$setOnInsert": {
                     "rule": rule_text,
                     "first_seen_at_utc": now,
-                    "seen_count": 0,
                     "sources": [],
                 },
                 "$set": {
