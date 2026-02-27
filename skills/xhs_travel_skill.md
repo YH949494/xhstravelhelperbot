@@ -65,12 +65,11 @@ Hook ≤12字。
 期待管理
 🎯 Caption 结构规则
 Caption 必须包含：
-情境共鸣
-价值定位
-2–3 个信息点
-体验句
-Save 触发
-避免泛形容词。
+-第1行：挑战常见行为（如“KL人周末不要只会去商场”）
+-第2行：1句话总结路线
+-第3行：价格锚点（RMxx）
+-结尾：互动提问句
+-禁止泛灵感文案语气。
 🎯 情绪 + 实用平衡
 内容必须同时具备：
 情绪画面感
@@ -106,21 +105,73 @@ mistake framing
 禁止硬推 affiliate。
 🎯 默认输出模板（必须）
 🎬 POST SCRIPT
-Hook
-[≤12字]
-Point 1
-[洞察]
-Point 2
-[洞察]
-Point 3（可选）
-[洞察]
+Hook（最多20个中文字符）
+- 必须包含具体地点名（如 Sungai Gabai / Sekinchan / Janda Baik）
+- 必须包含价格锚点（RMxx）
+- 禁止泛词
+
+示例规则：
+❌ "RM100畅游雪兰莪秘境"
+✅ "RM100玩Hulu Langat瀑布+Ampang夜市"
+
+Point 1 – Specific Location
+
+必填：
+- 精确地点名（禁止模糊）
+- 门票或停车费
+- 步行时间或到达方式
+- 1条感官细节（如水温、气味、拥挤度）
+
+格式：
+📍[Exact Location Name]
+门票 RM__
+停车 RM__
+步行 __ 分钟
+体验细节：______
+
+Point 2 – Specific Food / Local Snack
+
+必填：
+- 精确摊位/区域名
+- 精确食物名（禁止“local snacks”等泛称）
+- 每项单价
+- 总花费估算
+
+格式：
+🍜 地点：[Night market / stall name]
+- [Food name] RM__
+- [Food name] RM__
+- [Food name] RM__
+总共约 RM__
+
+Point 3 – Practical Optimization
+
+必须包含：
+- 时间建议
+- 交通或人流预警
+- 省钱技巧
+
 Credibility line
-[真实信号]
+
+必须包含：
+- 实测时间（如 Sunday 10am）
+- 实际总花费估算
+
 Save trigger
-[收藏理由]
+
+必须短、自然。
+禁止 AI 式 CTA（如“开启你的探索之旅”）。
 ✍️ CAPTION
 [结构化短 caption]
 🏷 HASHTAGS
 5–8个垂类标签
 💡 VISUAL IDEA
 描述拍摄建议
+
+## Hard Rules
+- 禁止 generic 词："hidden"、"authentic"、"delicious" 等
+- 禁止未指明食物
+- 每条脚本至少包含 3 个具体价格
+- 每条脚本必须包含精确地点名
+- 避免旅行宣传册语气
+- 语气必须像个人实测，不像推荐博客
