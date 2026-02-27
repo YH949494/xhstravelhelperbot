@@ -286,13 +286,20 @@ def store_learning(metadata: dict[str, str], analysis: dict[str, Any], script_te
             continue
         rules_valid += 1
         rid = f"rule:{hashlib.sha1(rule_text.encode('utf-8')).hexdigest()}"
+        source_entry = {
+            "ing_id": ing_id,
+            "script_hash": script_hash,
+            "created_at_utc": now,
+        }
+        existing_rule = skill_rules.find_one({"_id": rid}, {"sources": 1})
+        if existing_rule and "sources" in existing_rule and not isinstance(existing_rule.get("sources"), list):
+            skill_rules.update_one({"_id": rid}, {"$set": {"sources": [existing_rule.get("sources")]}})
         result = skill_rules.update_one(
             {"_id": rid},
             {
                 "$setOnInsert": {
                     "rule": rule_text,
                     "first_seen_at_utc": now,
-                    "sources": [],
                 },
                 "$set": {
                     "why": str(item.get("why") or ""),
@@ -303,12 +310,9 @@ def store_learning(metadata: dict[str, str], analysis: dict[str, Any], script_te
                     "last_seen_at_utc": now,
                 },
                 "$inc": {"seen_count": 1},
+                # Keep sources as an array and avoid conflicting writes on the same path.
                 "$addToSet": {
-                    "sources": {
-                        "ing_id": ing_id,
-                        "script_hash": script_hash,
-                        "created_at_utc": now,
-                    }
+                    "sources": {"$each": [source_entry]}
                 },
             },
             upsert=True,
