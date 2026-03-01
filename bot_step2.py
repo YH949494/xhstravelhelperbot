@@ -45,6 +45,7 @@ APPROVAL_CHAT_ID = int(os.getenv("APPROVAL_CHAT_ID", "0"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 MODEL_TITLES = os.getenv("OPENAI_MODEL_TITLES", "gpt-4o-mini")
 OPENAI_MODEL_NOTE = os.getenv("OPENAI_MODEL_NOTE", "gpt-4o-mini")
+OPENAI_MODEL_SCRIPT = os.getenv("OPENAI_MODEL_SCRIPT", OPENAI_MODEL_NOTE)
 MAX_NOTES_PER_DAY = int(os.getenv("MAX_NOTES_PER_DAY", "2"))
 NOTE_MAX_TOKENS = int(os.getenv("NOTE_MAX_TOKENS", "900"))
 TZ = os.getenv("TZ", "Asia/Kuala_Lumpur")
@@ -72,6 +73,7 @@ RULE_SKILL_FILES = {"growth_rules.md", "script_framework.md", "hook_library.md"}
 MEMORY_SKILL_FILES = {"performance_log.md", "failure_log.md", "series_registry.md"}
 MY_LOCAL_KEYWORDS = ["马来西亚", "大马", "malaysia", "my", "kl", "吉隆坡", "雪兰莪", "森美兰", "槟城", "怡保", "马六甲", "金马仑", "波德申", "云顶", "东海岸"]
 OVERSEAS_KEYWORDS = ["日本", "韩国", "欧洲", "美国", "泰国", "越南", "巴厘", "新加坡"]
+DEFAULT_REGIONS_POOL = ["penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"]
 
 if not TG_TOKEN or not OPENAI_API_KEY or not APPROVAL_CHAT_ID:
     raise RuntimeError("Missing env: TELEGRAM_BOT_TOKEN / OPENAI_API_KEY / APPROVAL_CHAT_ID")
@@ -817,98 +819,273 @@ async def generate_6_titles(app: Application | None = None) -> list[dict]:
         raise
 
 
-def _score_and_pick_top2(items: list[dict]) -> tuple[list[dict], list[dict]]:
-    scored = []
-    for it in items:
-        sc = score_item(it)
-        it2 = dict(it)
-        it2["_score"] = sc
-        scored.append(it2)
-    scored.sort(key=lambda x: x["_score"]["total"], reverse=True)
-    return scored, scored[:2]
+def _get_regions_pool() -> list[str]:
+    raw = (os.getenv("REGIONS_POOL", "") or "").strip()
+    if not raw:
+        return DEFAULT_REGIONS_POOL
+    vals = [x.strip().lower() for x in raw.split(",") if x.strip()]
+    return vals if len(vals) >= 2 else DEFAULT_REGIONS_POOL
 
 
-async def generate_validated_top2(app: Application | None = None, max_retries: int = 3) -> tuple[list[dict], list[dict], bool]:
-    best_scored: list[dict] = []
-    best_top2: list[dict] = []
-    best_valid_count = -1
-    for attempt in range(max_retries + 1):
-        items = await generate_6_titles(app)
-        scored, top2 = _score_and_pick_top2(items)
-        valid_count = 0
-        all_valid = True
-        for it in top2:
-            title = (it.get("title") or "").strip()
-            ok, reason = _hook_validation_reason(title)
-            if ok:
-                valid_count += 1
-            else:
-                all_valid = False
-                append_failure_log_line(title, reason, str(SKILLS_DIR))
-                log.warning("title rejected by hook validation: %s | reason=%s", title, reason)
-        if valid_count > best_valid_count:
-            best_valid_count = valid_count
-            best_scored = scored
-            best_top2 = top2
-        if all_valid:
-            return scored, top2, False
-    log.warning("hook validation retries exhausted; using best available attempt")
-    return best_scored, best_top2, True
+def _pick_regions_for_day(now: datetime) -> tuple[str, str]:
+    regions = _get_regions_pool()
+    idx = (now.timetuple().tm_yday * 2) % len(regions)
+    return regions[idx], regions[(idx + 1) % len(regions)]
 
 
-def format_top2_message(content_id: str, top2: list[dict]) -> str:
-    lines = []
-    lines.append("📌 今日最佳 2 条选题（待审批）")
-    lines.append(f"🆔 content_id: {content_id}")
-    lines.append("")
+async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict]:
+    prompt = (
+        "你是小红书马来西亚旅行标题编辑。\n"
+        "输出5条标题候选，必须覆盖两个地区。\n"
+        f"今日地区: {region_a}, {region_b}\n"
+        "硬性要求:\n"
+        "1) 仅输出JSON，格式为 {\"items\":[...]}。\n"
+        "2) items长度必须为5。\n"
+        "3) 每条必须包含且仅包含: title, region, location_hint。\n"
+        "4) region必须严格等于今日地区之一。\n"
+        "5) 每条标题14-18个中文字符。\n"
+        "6) 每条标题必须包含可搜索的具体地点名，不能只写州名/大区。\n"
+        "7) 风格配比: 第一人称2条、价格/冲突2条、时间/条件1条。\n"
+        "8) 禁止海外目的地。"
+    )
 
-    for i, it in enumerate(top2, start=1):
-        s = it["_score"]
-        lines.append(f"{i}️⃣ {it.get('title','').strip()}  （{s['total']}/40）")
-        lines.append(f"• 角度：{it.get('angle','').strip()}")
-        lines.append(f"• 目标人群：{it.get('target_audience','').strip()}")
-        lines.append(f"• CTA：{it.get('cta','Follow / 收藏小红书')}")
-        lines.append("")
+    banned_generic = {"好去处", "攻略", "推荐", "周末"}
+    region_words = {region_a.lower(), region_b.lower(), "penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"}
+
+    def _validate_items(items: Any) -> tuple[bool, str]:
+        if not isinstance(items, list) or len(items) != 5:
+            return False, "items must be list of 5"
+        seen_regions = set()
+        location_signal_fails = 0
+        for i, it in enumerate(items, start=1):
+            if not isinstance(it, dict):
+                return False, f"item#{i} must be object"
+            title = str(it.get("title", "")).strip()
+            region = str(it.get("region", "")).strip().lower()
+            location_hint = str(it.get("location_hint", "")).strip()
+            if not title or not region or not location_hint:
+                return False, f"item#{i} has empty fields"
+            cjk_chars = re.findall(r"[\u4e00-\u9fff]", title)
+            cjk_len = len(cjk_chars)
+            latin_tokens = re.findall(r"[A-Za-z0-9]+", title)
+            bonus = 2 if latin_tokens else 0
+            effective_len = cjk_len + bonus
+            if effective_len < 14 or effective_len > 18:
+                return False, f"item#{i} title length out of range"
+            location_keywords = ["Hotel", "Resort", "Cabin", "Airbnb", "Forest", "Villa", "Homestay"]
+            has_upper_word = bool(re.search(r"\b[A-Z][a-zA-Z]+\b", title))
+            has_location_kw = any(k in title for k in location_keywords)
+            if not has_upper_word and not has_location_kw:
+                location_signal_fails += 1
+            if region not in {region_a, region_b}:
+                return False, f"item#{i} region invalid"
+            if len(location_hint) < 2 or location_hint.lower() == region:
+                return False, f"item#{i} location_hint too generic"
+            if any(b in title for b in banned_generic):
+                return False, f"item#{i} title contains banned generic phrase"
+            compact = re.sub(r"[\s/、，,。.!！?？\-]+", "", title).lower()
+            if compact in region_words:
+                return False, f"item#{i} title is generic region word"
+            seen_regions.add(region)
+        if location_signal_fails > 1:
+            return False, "too many items lack concrete location signal"
+        if region_a not in seen_regions or region_b not in seen_regions:
+            return False, "items do not cover both regions"
+        return True, "ok"
+
+    last_err = ""
+    for _ in range(3):
+        resp = client.chat.completions.create(
+            model=MODEL_TITLES,
+            messages=[
+                {"role": "system", "content": "你只返回合法JSON对象，不要代码块，不要解释。"},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.6,
+            max_tokens=700,
+        )
+        content = (resp.choices[0].message.content or "{}").strip()
+        try:
+            data = json.loads(_extract_json(content))
+        except Exception:
+            last_err = "invalid JSON"
+            continue
+        items = data.get("items") if isinstance(data, dict) else None
+        ok, reason = _validate_items(items)
+        if ok:
+            return items
+        last_err = reason
+
+    raise ValueError(f"title candidates validation failed after retries: {last_err}")
+
+
+def format_titles_message(content_id: str, regions: list[str], items: list[dict]) -> str:
+    lines = [
+        "📌 今日 5 条标题候选（待选择）",
+        f"🆔 content_id: {content_id}",
+        f"🌍 区域轮换: {regions[0]} / {regions[1]}",
+        "",
+    ]
+    for i, it in enumerate(items, start=1):
+        lines.append(f"{i}. {it.get('title','').strip()}")
     return "\n".join(lines).strip()
 
 
 def approval_keyboard(content_id: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            InlineKeyboardButton("✅ 选 1", callback_data=f"approve:1:{content_id}"),
-            InlineKeyboardButton("✅ 选 2", callback_data=f"approve:2:{content_id}"),
+            InlineKeyboardButton("✅ 选 1", callback_data=f"pick:1:{content_id}"),
+            InlineKeyboardButton("✅ 选 2", callback_data=f"pick:2:{content_id}"),
+            InlineKeyboardButton("✅ 选 3", callback_data=f"pick:3:{content_id}"),
         ],
         [
-            InlineKeyboardButton("🔥 两条都做", callback_data=f"approve:both:{content_id}"),
+            InlineKeyboardButton("✅ 选 4", callback_data=f"pick:4:{content_id}"),
+            InlineKeyboardButton("✅ 选 5", callback_data=f"pick:5:{content_id}"),
+        ],
+        [
+            InlineKeyboardButton("🧾 生成脚本", callback_data=f"generate:{content_id}"),
+            InlineKeyboardButton("🧹 清空选择", callback_data=f"clear:{content_id}"),
+        ],
+        [
             InlineKeyboardButton("🔁 重生成", callback_data=f"regen:{content_id}"),
         ],
     ]
     return InlineKeyboardMarkup(kb)
 
 
+def build_script_prompt(title: str, region: str, location_hint: str, loaded_skill_texts: list[tuple[str, str]]) -> str:
+    skill_blocks = []
+    for name, text in loaded_skill_texts:
+        skill_blocks.append(f"[RULES FILE: {name}]\n{text}")
+    skills_text = "\n\n".join(skill_blocks)
+    return (
+        "请生成1条完整小红书旅行脚本。严格按以下格式输出，标题和顺序不能变：\n\n"
+        "🎬 POST SCRIPT\n"
+        "Hook\n"
+        "<...>\n\n"
+        "正文\n"
+        "<...>\n\n"
+        "Save trigger\n"
+        "<...>\n\n"
+        "✍️ CAPTION\n"
+        "<...>\n\n"
+        "🏷 HASHTAGS\n"
+        "<...>\n\n"
+        "💡 VISUAL SHOTLIST\n"
+        "- Shot 1:\n"
+        "- Shot 2:\n"
+        "- Shot 3:\n"
+        "- Shot 4:\n"
+        "- Shot 5:\n\n"
+        "硬性规则:\n"
+        "- 中文为主，可少量自然MY口吻词（eh/tight/chill/menu/local），不可连续英文重句。\n"
+        "- 必须第一人称真实踩点感，不要出现：第一/其次/总结/今天来分享/很多人问我。\n"
+        "- 必须出现1个具体地点（优先使用location_hint）、3个可拍细节、1个人物元素。\n"
+        "- 结尾必须略带不完美（如 tight/没有很爽/不要expect太多）。\n"
+        f"- 题目: {title}\n"
+        f"- region: {region}\n"
+        f"- location_hint: {location_hint}\n\n"
+        f"参考规则:\n{skills_text}"
+    )
+
+
+def _split_script_for_telegram(script_text: str, limit: int = 3500) -> list[str]:
+    sections = [x for x in re.split(r"\n(?=🎬 POST SCRIPT|✍️ CAPTION|🏷 HASHTAGS|💡 VISUAL SHOTLIST)", script_text.strip()) if x]
+    if not sections:
+        return [script_text]
+    chunks: list[str] = []
+    cur = ""
+    for sec in sections:
+        candidate = sec if not cur else f"{cur}\n\n{sec}"
+        if len(candidate) <= limit:
+            cur = candidate
+        else:
+            if cur:
+                chunks.append(cur)
+            if len(sec) <= limit:
+                cur = sec
+            else:
+                sec_lines = sec.splitlines()
+                if not sec_lines:
+                    continue
+                head = sec_lines[0]
+                body = sec_lines[1:]
+                part = head
+                for line in body:
+                    cand = f"{part}\n{line}" if part else line
+                    if len(cand) <= limit:
+                        part = cand
+                    else:
+                        chunks.append(part)
+                        part = f"{head}\n{line}" if len(f"{head}\n{line}") <= limit else line[:limit]
+                if part:
+                    cur = part
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+async def _generate_selected_scripts(app: Application, content_id: str, draft: dict[str, Any]) -> None:
+    selected = draft.get("selected") or []
+    if len(selected) < 2:
+        return
+    if draft.get("status") == "generated":
+        return
+    skill_pairs = load_skill_texts(str(SKILLS_DIR))
+    scripts = draft.setdefault("scripts", {})
+    for idx in selected[:2]:
+        if str(idx) in scripts:
+            continue
+        item = draft["items"][idx - 1]
+        prompt = build_script_prompt(
+            item.get("title", "").strip(),
+            item.get("region", "").strip(),
+            item.get("location_hint", "").strip(),
+            skill_pairs,
+        )
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL_SCRIPT,
+            messages=[
+                {"role": "system", "content": "你是小红书旅行脚本编辑。严格按用户给定格式输出。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=1600,
+        )
+        script_text = (resp.choices[0].message.content or "").strip()
+        scripts[str(idx)] = script_text
+        header = f"🧾 脚本 #{idx} | {item.get('title','').strip()}"
+        chunks = _split_script_for_telegram(script_text)
+        if chunks:
+            chunks[0] = f"{header}\n\n{chunks[0]}"
+        for ch in chunks:
+            await app.bot.send_message(chat_id=APPROVAL_CHAT_ID, text=ch, disable_web_page_preview=True)
+    draft["status"] = "generated"
+
+
 async def run_daily_job(app: Application) -> None:
     now = datetime.now(tzinfo)
     content_id = make_content_id(now)
     log.info("Running daily job content_id=%s", content_id)
+    region_a, region_b = _pick_regions_for_day(now)
+    try:
+        items = await generate_5_title_candidates(region_a, region_b)
+    except Exception:
+        log.exception("daily title generation failed content_id=%s", content_id)
+        await app.bot.send_message(chat_id=APPROVAL_CHAT_ID, text="❌ 今日标题生成失败，请稍后重试。")
+        return
 
-    scored, top2, has_validation_warning = await generate_validated_top2(app)
+    msg = format_titles_message(content_id, [region_a, region_b], items)
+    await app.bot.send_message(chat_id=APPROVAL_CHAT_ID, text=msg, reply_markup=approval_keyboard(content_id), disable_web_page_preview=True)
 
-    msg = format_top2_message(content_id, top2)
-    if has_validation_warning:
-        msg = msg + "\n\n⚠️ Hook校验多次未完全通过，已返回最佳候选。"
-    await app.bot.send_message(
-        chat_id=APPROVAL_CHAT_ID,
-        text=msg,
-        reply_markup=approval_keyboard(content_id),
-        disable_web_page_preview=True,
-    )
-
-    # store in bot_data for callback usage
     app.bot_data.setdefault("drafts", {})[content_id] = {
         "created_at": now.isoformat(),
-        "items": scored,   # keep all 6
-        "top2": top2,
-        "approved": None,
+        "regions": [region_a, region_b],
+        "items": items,
+        "selected": [],
+        "scripts": {},
+        "status": "pending",
     }
 
 
@@ -927,97 +1104,130 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     drafts = context.application.bot_data.setdefault("drafts", {})
     action = parts[0]
 
-    if action == "approve":
+    if action == "pick":
         if len(parts) < 3:
-            log.warning("Malformed approve callback: %s", data)
             await q.edit_message_text("❌ 指令格式错误，请重试。")
             return
-        choice = parts[1]  # 1 / 2 / both
+        try:
+            pick_idx = int(parts[1])
+        except Exception:
+            await q.edit_message_text("❌ 选择序号无效，请重试。")
+            return
+        if pick_idx < 1 or pick_idx > 5:
+            await q.edit_message_text("❌ 选择序号无效，请重试。")
+            return
         content_id = parts[2]
         d = drafts.get(content_id)
         if not d:
             await q.edit_message_text("❌ 找不到该 content_id（可能重启后丢失）。请点 🔁 重生成。")
             return
+        selected = d.setdefault("selected", [])
 
-        d["approved"] = choice
-        top2 = d["top2"]
-        chosen = []
-        if choice == "1":
-            chosen = [top2[0]]
-        elif choice == "2":
-            chosen = [top2[1]]
-        elif choice == "both":
-            chosen = top2
-        else:
-            await q.edit_message_text("❌ 未知审批选项，请重试。")
+        if pick_idx in selected:
+            selected.remove(pick_idx)
+            selected.sort()
+            d["status"] = "pending"
+            await q.edit_message_text(
+                format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", []))
+                + f"\n\n✅ 已选择: {selected}",
+                reply_markup=approval_keyboard(content_id),
+                disable_web_page_preview=True,
+            )
             return
 
-        daily_counts = context.application.bot_data.setdefault("daily_counts", {})
-        day_key = datetime.now(tzinfo).strftime("%Y%m%d")
-        used = int(daily_counts.get(day_key, 0))
-        remaining = max(0, MAX_NOTES_PER_DAY - used)
-        if remaining <= 0:
-            await q.edit_message_text(f"⚠️ 今日已达上限（{MAX_NOTES_PER_DAY}/{MAX_NOTES_PER_DAY}），明天再生成。")
+        if len(selected) >= 2:
+            await q.edit_message_text(
+                format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", []))
+                + f"\n\n⚠️ 已选满2条：{selected[:2]}，点 🧾 生成脚本 或 🔁 重生成",
+                reply_markup=approval_keyboard(content_id),
+                disable_web_page_preview=True,
+            )
             return
-        selected = chosen[:remaining]
-        over_limit = len(chosen) > len(selected)
 
-        generated_titles = []
-        for it in selected:
+        selected.append(pick_idx)
+        selected.sort()
+
+        if len(selected) >= 2:
             try:
-                note_text, needs_warning = await generate_note(
-                    it.get("title", "").strip(),
-                    it.get("angle", "").strip(),
-                    it.get("target_audience", "").strip(),
-                )
-                if needs_warning:
-                    note_text = note_text + "\n\n⚠️ Hook 可能超字数，请手动微调"
-                await context.application.bot.send_message(
-                    chat_id=APPROVAL_CHAT_ID,
-                    text=note_text,
+                await _generate_selected_scripts(context.application, content_id, d)
+                await q.edit_message_text(
+                    format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", []))
+                    + f"\n\n✅ 已选择: {selected[:2]}，脚本已生成。",
+                    reply_markup=approval_keyboard(content_id),
                     disable_web_page_preview=True,
                 )
-                generated_titles.append(it.get("title", "").strip())
-                used += 1
-                daily_counts[day_key] = used
             except Exception:
-                log.exception("note generation failed content_id=%s title=%s", content_id, it.get("title", ""))
-                await context.application.bot.send_message(
-                    chat_id=APPROVAL_CHAT_ID,
-                    text=f"❌ 笔记生成失败：{it.get('title','').strip()}",
-                )
+                log.exception("script generation failed content_id=%s", content_id)
+                await context.application.bot.send_message(chat_id=APPROVAL_CHAT_ID, text="❌ 脚本生成失败，请稍后再试。")
+        else:
+            await q.edit_message_text(
+                format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", []))
+                + f"\n\n✅ 已选择: {selected}（再选1条后自动生成脚本）",
+                reply_markup=approval_keyboard(content_id),
+                disable_web_page_preview=True,
+            )
+        return
 
-        lines = ["✅ 已生成笔记："]
-        for title in generated_titles:
-            lines.append(f"• {title}")
-        if not generated_titles:
-            lines.append("• 无（生成失败，请查看日志）")
-        lines.append("")
-        lines.append(f"今日计数：{daily_counts.get(day_key, used)}/{MAX_NOTES_PER_DAY}")
-        if over_limit:
-            lines.append("⚠️ 超出今日上限，本次仅生成 1 条。" if remaining == 1 else "⚠️ 超出今日上限，已按剩余额度生成。")
-        await q.edit_message_text("\n".join(lines).strip())
+    if action == "generate":
+        content_id = parts[1] if len(parts) >= 2 else ""
+        d = drafts.get(content_id)
+        if not d:
+            await q.edit_message_text("❌ 找不到该 content_id（可能重启后丢失）。请点 🔁 重生成。")
+            return
+        if len(d.get("selected", [])) < 2:
+            await q.edit_message_text(
+                format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", []))
+                + f"\n\n⚠️ 当前仅选中 {len(d.get('selected', []))} 条，请先选满2条。",
+                reply_markup=approval_keyboard(content_id),
+                disable_web_page_preview=True,
+            )
+            return
+        try:
+            await _generate_selected_scripts(context.application, content_id, d)
+            await q.edit_message_text(
+                format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", []))
+                + f"\n\n✅ 已选择: {d.get('selected', [])[:2]}，脚本已生成。",
+                reply_markup=approval_keyboard(content_id),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            log.exception("manual generate failed")
+            await context.application.bot.send_message(chat_id=APPROVAL_CHAT_ID, text="❌ 脚本生成失败，请稍后再试。")
+        return
+
+    if action == "clear":
+        content_id = parts[1] if len(parts) >= 2 else ""
+        d = drafts.get(content_id)
+        if not d:
+            await q.edit_message_text("❌ 找不到该 content_id（可能重启后丢失）。请点 🔁 重生成。")
+            return
+        d["selected"] = []
+        d["status"] = "pending"
+        await q.edit_message_text(
+            format_titles_message(content_id, d.get("regions", ["-", "-"]), d.get("items", [])) + "\n\n✅ 已清空选择。",
+            reply_markup=approval_keyboard(content_id),
+            disable_web_page_preview=True,
+        )
         return
 
     if action == "regen":
         content_id = parts[1] if len(parts) >= 2 else ""
-        # regenerate immediately and replace the message
         try:
             now = datetime.now(tzinfo)
-            new_id = make_content_id(now)
-            scored, top2, has_validation_warning = await generate_validated_top2(context.application)
-
-            drafts[new_id] = {
+            old = drafts.get(content_id) or {}
+            regions = old.get("regions") if isinstance(old.get("regions"), list) and len(old.get("regions")) >= 2 else list(_pick_regions_for_day(now))
+            region_a, region_b = regions[0], regions[1]
+            items = await generate_5_title_candidates(region_a, region_b)
+            drafts[content_id] = {
                 "created_at": now.isoformat(),
-                "items": scored,
-                "top2": top2,
-                "approved": None,
+                "regions": [region_a, region_b],
+                "items": items,
+                "selected": [],
+                "scripts": {},
+                "status": "pending",
             }
-
-            msg = format_top2_message(new_id, top2)
-            if has_validation_warning:
-                msg = msg + "\n\n⚠️ Hook校验多次未完全通过，已返回最佳候选。"
-            await q.edit_message_text(msg, reply_markup=approval_keyboard(new_id), disable_web_page_preview=True)
+            msg = format_titles_message(content_id, [region_a, region_b], items)
+            await q.edit_message_text(msg, reply_markup=approval_keyboard(content_id), disable_web_page_preview=True)
         except Exception:
             log.exception("regen failed")
             await q.edit_message_text("❌ 重生成失败（OpenAI 或 JSON 格式错误）。再点一次或看日志。")
