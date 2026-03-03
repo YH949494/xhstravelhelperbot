@@ -1158,12 +1158,77 @@ def build_script_prompt(title: str, region: str, location_hint: str, loaded_skil
         "- 中文为主，可少量自然MY口吻词（eh/tight/chill/menu/local），不可连续英文重句。\n"
         "- 必须第一人称真实踩点感，不要出现：第一/其次/总结/今天来分享/很多人问我。\n"
         "- 必须出现1个具体地点（优先使用location_hint）、3个可拍细节、1个人物元素。\n"
-        "- 结尾必须略带不完美（如 tight/没有很爽/不要expect太多）。\n"
+        "- 正文必须是完整时间线，按顺序至少3个时间段（如早上/中午/下午/晚上/Day1/Day2/check in/checkout/出发），并且要有至少2个明确转场词（然后/接着/中午之后/到了晚上等）。\n"
+        "- 必须明确同伴信息：出现我/我们/朋友/父母/情侣/独自等关系，不可全程无人称。\n"
+        "- 必须至少1个具体动作（走/坐/排队/开车/搭车等）+ 至少1个感官细节（香/热/风/脆/辣等），不能只写抽象感受。\n"
+        "- 必须至少1句反常识对比：很多人以为…但其实… / 你以为…其实… / 本来以为…结果…。\n"
+        "- 必须至少1个真实缺点，并给出解决办法或明确不适合人群（不能只夸）。\n"
+        "- 预算要自洽：标题预算与正文花费不能矛盾；如果出现两个预算，必须解释场景差异（如含住宿/交通/预算上限）。\n"
+        "- 正文中必须提供决策信息块：时间建议 + 大致花费 + 适合/不适合谁。\n"
+        "- 结尾最后3行必须是态度句（如重点不是打卡、更重要的是...），禁止出现“记得收藏/欢迎打卡/关注我/点个赞”。\n"
         f"- 题目: {title}\n"
         f"- region: {region}\n"
         f"- location_hint: {location_hint}\n\n"
         f"参考规则:\n{skills_text}"
     )
+
+
+def _validate_script_structure(script_text: str) -> tuple[bool, str]:
+    text = (script_text or "").strip()
+    if not text:
+        return False, "timeline_incomplete"
+
+    timeline_keywords = ["早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里", "Day 1", "Day 2", "check in", "checkout", "出发"]
+    timeline_hits = sum(1 for k in timeline_keywords if k in text)
+    transition_keywords = ["中午之后", "吃完", "休息一下", "然后", "接着", "傍晚才", "到了晚上", "下午我们", "后来"]
+    transition_hits = sum(1 for k in transition_keywords if k in text)
+    if timeline_hits < 3 or transition_hits < 2:
+        return False, "timeline_incomplete"
+
+    companion_keywords = ["我和", "我们", "朋友", "爸", "妈", "父母", "家人", "情侣", "对象", "自己一个", "独自"]
+    if not any(k in text for k in companion_keywords):
+        return False, "no_companion"
+
+    action_keywords = ["走", "坐", "排队", "等", "绕", "找停车", "流汗", "踩", "喝", "咬", "夹", "拍", "开车", "搭车"]
+    sensory_keywords = ["香", "味", "闻", "吵", "静", "潮", "热", "冷", "风", "汗", "脆", "苦", "甜", "酸", "辣", "油"]
+    if not any(k in text for k in action_keywords) or not any(k in text for k in sensory_keywords):
+        return False, "no_action_or_sensory"
+
+    has_contrarian = (
+        ("很多人以为" in text and (("但其实" in text) or ("其实" in text)))
+        or ("你以为" in text and "其实" in text)
+        or ("本来以为" in text and (("结果" in text) or ("但" in text)))
+    )
+    if not has_contrarian:
+        return False, "no_contrarian"
+
+    downside_keywords = ["但说实话", "老实说", "缺点", "不适合", "要有心理准备", "tight", "没有厕所", "人多", "热", "停车难", "排队久"]
+    workaround_keywords = ["解决", "所以我建议", "可以", "最好", "提前", "避开", "带", "记得", "如果你怕"]
+    if not any(k in text for k in downside_keywords) or not any(k in text for k in workaround_keywords):
+        return False, "no_downside_or_fix"
+
+    amounts = [int(x) for x in re.findall(r"RM\s*(\d+)", text)]
+    if len(amounts) >= 2:
+        high = max(amounts)
+        low = min(amounts)
+        if low < high * 0.6:
+            budget_explain_cues = ["RM150", "2天1夜", "如果住", "加上住宿", "交通", "才会到", "预算上限", "不是实际"]
+            if not any(k in text for k in budget_explain_cues):
+                return False, "budget_inconsistent"
+
+    time_suggestion_cues = ["几点", "6点半", "早点", "避开高峰", "最好", "建议"]
+    suitable_cues = ["适合", "不适合", "推荐给", "如果你是"]
+    if not any(k in text for k in time_suggestion_cues) or not any(k in text for k in suitable_cues):
+        return False, "missing_decision_info"
+
+    tail_lines = [ln.strip() for ln in text.splitlines() if ln.strip()][-3:]
+    tail = "\n".join(tail_lines)
+    banned_tail = ["记得收藏", "欢迎打卡", "关注我", "点个赞"]
+    attitude_cues = ["不是用来打卡", "重点不是", "更重要的是", "有些地方", "这趟值的", "别expect"]
+    if any(k in tail for k in banned_tail) or not any(k in tail for k in attitude_cues):
+        return False, "ending_not_attitude"
+
+    return True, "ok"
 
 
 def _split_script_for_telegram(script_text: str, limit: int = 3500) -> list[str]:
@@ -1220,16 +1285,32 @@ async def _generate_selected_scripts(app: Application, content_id: str, draft: d
             item.get("location_hint", "").strip(),
             skill_pairs,
         )
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL_SCRIPT,
-            messages=[
-                {"role": "system", "content": "你是小红书旅行脚本编辑。严格按用户给定格式输出。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
-            max_tokens=1600,
-        )
-        script_text = (resp.choices[0].message.content or "").strip()
+        script_text = ""
+        validate_reason = "timeline_incomplete"
+        base_prompt = prompt
+        for attempt in range(1, 4):
+            current_prompt = base_prompt
+            if attempt > 1:
+                current_prompt = (
+                    f"【Fix instructions】上一版不合规，缺失项：{validate_reason}。请只修复缺失约束并保持原输出格式与标题。\n\n"
+                    f"{base_prompt}"
+                )
+            resp = client.chat.completions.create(
+                model=OPENAI_MODEL_SCRIPT,
+                messages=[
+                    {"role": "system", "content": "你是小红书旅行脚本编辑。严格按用户给定格式输出。"},
+                    {"role": "user", "content": current_prompt},
+                ],
+                temperature=0.7,
+                max_tokens=1600,
+            )
+            script_text = (resp.choices[0].message.content or "").strip()
+            validation_text = f"题目: {item.get('title', '').strip()}\n{script_text}"
+            valid, validate_reason = _validate_script_structure(validation_text)
+            if valid:
+                break
+            if attempt < 3:
+                log.warning("script validation failed, retrying content_id=%s idx=%s reason=%s attempt=%s", content_id, idx, validate_reason, attempt)
         scripts[str(idx)] = script_text
         header = f"🧾 脚本 #{idx} | {item.get('title','').strip()}"
         chunks = _split_script_for_telegram(script_text)
