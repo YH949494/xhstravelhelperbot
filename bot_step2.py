@@ -833,6 +833,35 @@ def _pick_regions_for_day(now: datetime) -> tuple[str, str]:
     return regions[idx], regions[(idx + 1) % len(regions)]
 
 
+def _effective_len(title: str) -> int:
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", title or "")
+    cjk_len = len(cjk_chars)
+    latin_tokens = re.findall(r"[A-Za-z0-9]+", title or "")
+    bonus = 2 if latin_tokens else 0
+    return cjk_len + bonus
+
+
+def _compress_title_to_range(title: str, min_len: int = 14, max_len: int = 18) -> str:
+    t = str(title or "").strip()
+    if not t:
+        return "旅行不踩雷清单"
+
+    fillers = ["真的", "超", "太", "原来", "直接", "一定要", "必去", "不踩雷", "懒人", "完美", "最强", "私藏", "合集", "攻略", "周末"]
+    for token in fillers:
+        t = t.replace(token, "")
+
+    t = re.sub(r"[\s]+", "", t)
+    t = re.sub(r"[、，,。.!！?？]+", "", t)
+    t = t.strip("-_/|：:；;")
+
+    while _effective_len(t) > max_len and len(t) > 1:
+        t = t[:-1].rstrip("-_/|：:；;")
+
+    if not t:
+        return "旅行不踩雷清单"
+    return t
+
+
 async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict]:
     prompt = (
         "你是小红书马来西亚旅行标题编辑。\n"
@@ -844,80 +873,177 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
         "3) 每条必须包含且仅包含: title, region, location_hint。\n"
         "4) region必须严格等于今日地区之一。\n"
         "5) 每条标题14-18个中文字符。\n"
+        "5.1) 若包含英文/数字，长度按中文字符+英文数字词组补偿计算后仍需在14-18。\n"
         "6) 每条标题必须包含可搜索的具体地点名，不能只写州名/大区。\n"
         "7) 风格配比: 第一人称2条、价格/冲突2条、时间/条件1条。\n"
         "8) 禁止海外目的地。"
     )
 
-    banned_generic = {"好去处", "攻略", "推荐", "周末"}
+    banned_generic = {"好去处", "攻略", "推荐"}
     region_words = {region_a.lower(), region_b.lower(), "penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"}
 
-    def _validate_items(items: Any) -> tuple[bool, str]:
+    def _validate_items(items: Any) -> tuple[bool, str, list[dict]]:
         if not isinstance(items, list) or len(items) != 5:
-            return False, "items must be list of 5"
+            return False, "items must be list of 5", []
         seen_regions = set()
         location_signal_fails = 0
+        valid_items: list[dict] = []
+        invalid_count = 0
         for i, it in enumerate(items, start=1):
             if not isinstance(it, dict):
-                return False, f"item#{i} must be object"
+                return False, f"item#{i} must be object", []
             title = str(it.get("title", "")).strip()
             region = str(it.get("region", "")).strip().lower()
             location_hint = str(it.get("location_hint", "")).strip()
             if not title or not region or not location_hint:
-                return False, f"item#{i} has empty fields"
-            cjk_chars = re.findall(r"[\u4e00-\u9fff]", title)
-            cjk_len = len(cjk_chars)
-            latin_tokens = re.findall(r"[A-Za-z0-9]+", title)
-            bonus = 2 if latin_tokens else 0
-            effective_len = cjk_len + bonus
+                return False, f"item#{i} has empty fields", []
+            effective_len = _effective_len(title)
             if effective_len < 14 or effective_len > 18:
-                return False, f"item#{i} title length out of range"
+                fixed_title = _compress_title_to_range(title, 14, 18)
+                fixed_len = _effective_len(fixed_title)
+                if fixed_title != title:
+                    log.warning(
+                        "auto-compressed title item#%s: before='%s'(%s) -> after='%s'(%s)",
+                        i,
+                        title,
+                        effective_len,
+                        fixed_title,
+                        fixed_len,
+                    )
+                    it["title"] = fixed_title
+                    title = fixed_title
+                    effective_len = fixed_len
+                if effective_len < 14 or effective_len > 18:
+                    final_title = _compress_title_to_range(title, 14, 18)
+                    final_len = _effective_len(final_title)
+                    if final_title != title:
+                        log.warning(
+                            "hard-trimmed title item#%s: before='%s'(%s) -> after='%s'(%s)",
+                            i,
+                            title,
+                            effective_len,
+                            final_title,
+                            final_len,
+                        )
+                        it["title"] = final_title
+                    if final_len < 14 or final_len > 18:
+                        invalid_count += 1
+                        continue
+                    title = final_title
             location_keywords = ["Hotel", "Resort", "Cabin", "Airbnb", "Forest", "Villa", "Homestay"]
             has_upper_word = bool(re.search(r"\b[A-Z][a-zA-Z]+\b", title))
             has_location_kw = any(k in title for k in location_keywords)
             if not has_upper_word and not has_location_kw:
                 location_signal_fails += 1
             if region not in {region_a, region_b}:
-                return False, f"item#{i} region invalid"
+                return False, f"item#{i} region invalid", []
             if len(location_hint) < 2 or location_hint.lower() == region:
-                return False, f"item#{i} location_hint too generic"
+                return False, f"item#{i} location_hint too generic", []
             if any(b in title for b in banned_generic):
-                return False, f"item#{i} title contains banned generic phrase"
+                invalid_count += 1
+                continue
             compact = re.sub(r"[\s/、，,。.!！?？\-]+", "", title).lower()
             if compact in region_words:
-                return False, f"item#{i} title is generic region word"
+                invalid_count += 1
+                continue
             seen_regions.add(region)
+            valid_items.append(it)
+        if invalid_count > 0 and len(valid_items) < 5:
+            return False, "needs_refill", valid_items
         if location_signal_fails > 1:
-            return False, "too many items lack concrete location signal"
+            return False, "too many items lack concrete location signal", []
         if region_a not in seen_regions or region_b not in seen_regions:
-            return False, "items do not cover both regions"
-        return True, "ok"
+            return False, "items do not cover both regions", []
+        return True, "ok", valid_items
 
-    last_err = ""
-    for _ in range(3):
+    def _request_items(user_prompt: str) -> tuple[list[dict] | None, str]:
         resp = client.chat.completions.create(
             model=MODEL_TITLES,
             messages=[
                 {"role": "system", "content": "你只返回合法JSON对象，不要代码块，不要解释。"},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
-            temperature=0.6,
+            temperature=0.3,
             max_tokens=700,
         )
         content = (resp.choices[0].message.content or "{}").strip()
         try:
             data = json.loads(_extract_json(content))
         except Exception:
-            last_err = "invalid JSON"
+            return None, "invalid JSON"
+        return data.get("items") if isinstance(data, dict) else None, "ok"
+
+    def _safe_fallback_item(region: str) -> dict:
+        fallback_region = (region or region_a).strip().lower()
+        if fallback_region not in {region_a, region_b}:
+            fallback_region = region_a
+        return {"title": "本地周末旅行清单", "region": fallback_region, "location_hint": "Local Spot"}
+
+    def _normalize_best_effort(items: Any) -> list[dict]:
+        normalized: list[dict] = []
+        if isinstance(items, list):
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if not all(k in it for k in ("title", "region", "location_hint")):
+                    continue
+                normalized.append({
+                    "title": str(it.get("title", "")).strip(),
+                    "region": str(it.get("region", "")).strip().lower(),
+                    "location_hint": str(it.get("location_hint", "")).strip(),
+                })
+        idx = 0
+        while len(normalized) < 5:
+            normalized.append(_safe_fallback_item(region_a if idx % 2 == 0 else region_b))
+            idx += 1
+        return normalized[:5]
+
+    last_err = ""
+    best_effort_items: list[dict] = []
+    for _ in range(3):
+        items, err = _request_items(prompt)
+        if items is None:
+            last_err = err
             continue
-        items = data.get("items") if isinstance(data, dict) else None
-        ok, reason = _validate_items(items)
+        best_effort_items = items if isinstance(items, list) else best_effort_items
+        ok, reason, valid_items = _validate_items(items)
         if ok:
             return items
+        if reason == "needs_refill":
+            need = 5 - len(valid_items)
+            refill_prompt = (
+                "你是小红书马来西亚旅行标题编辑。\n"
+                f"ONLY generate {need} replacement items for missing slots.\n"
+                f"今日地区: {region_a}, {region_b}\n"
+                "仅输出JSON，格式为 {\"items\":[...]}。\n"
+                f"items长度必须为{need}。\n"
+                "每条必须包含且仅包含: title, region, location_hint。\n"
+                "4) region必须严格等于今日地区之一。\n"
+                "5) 每条标题14-18个中文字符。\n"
+                "5.1) 若包含英文/数字，长度按中文字符+英文数字词组补偿计算后仍需在14-18。\n"
+                "6) 每条标题必须包含可搜索的具体地点名，不能只写州名/大区。\n"
+                "7) 风格配比: 第一人称2条、价格/冲突2条、时间/条件1条。\n"
+                "8) 禁止海外目的地。"
+            )
+            refill_items, refill_err = _request_items(refill_prompt)
+            if refill_items is None:
+                last_err = refill_err
+                continue
+            if not isinstance(refill_items, list) or len(refill_items) != need:
+                last_err = "refill items size invalid"
+                continue
+            merged = valid_items + refill_items
+            best_effort_items = merged
+            ok2, reason2, _ = _validate_items(merged)
+            if ok2:
+                return merged
+            last_err = reason2
+            continue
         last_err = reason
 
-    raise ValueError(f"title candidates validation failed after retries: {last_err}")
+    log.error("title candidates validation failed after retries: %s", last_err)
+    return _normalize_best_effort(best_effort_items)
 
 
 def format_titles_message(content_id: str, regions: list[str], items: list[dict]) -> str:
