@@ -846,20 +846,64 @@ def _compress_title_to_range(title: str, min_len: int = 14, max_len: int = 18) -
     if not t:
         return "旅行不踩雷清单"
 
+    if _effective_len(t) < min_len:
+        return t
+
     fillers = ["真的", "超", "太", "原来", "直接", "一定要", "必去", "不踩雷", "懒人", "完美", "最强", "私藏", "合集", "攻略", "周末"]
-    for token in fillers:
-        t = t.replace(token, "")
+    if _effective_len(t) > max_len:
+        for token in fillers:
+            t = t.replace(token, "")
 
-    t = re.sub(r"[\s]+", "", t)
-    t = re.sub(r"[、，,。.!！?？]+", "", t)
-    t = t.strip("-_/|：:；;")
+        t = re.sub(r"[\s]+", "", t)
+        t = re.sub(r"[、，,。.!！?？]+", "", t)
+        t = t.strip("-_/|：:；;")
 
-    while _effective_len(t) > max_len and len(t) > 1:
-        t = t[:-1].rstrip("-_/|：:；;")
+        while _effective_len(t) > max_len and len(t) > 1:
+            t = t[:-1].rstrip("-_/|：:；;")
 
     if not t:
         return "旅行不踩雷清单"
     return t
+
+
+def _expand_title_to_min(title: str, region: str, location_hint: str, min_len: int = 14) -> str:
+    t = str(title or "").strip()
+    if not t:
+        t = "旅行清单"
+
+    if _effective_len(t) >= min_len:
+        return t
+
+    rm_match = re.search(r"rm\s*\d+", t, re.IGNORECASE)
+    if not rm_match:
+        t = f"RM150{t}"
+        if _effective_len(t) >= min_len:
+            return t
+
+    time_anchors = ["周末", "2天1夜", "一天", "半天", "一日"]
+    if not any(anchor in t for anchor in time_anchors):
+        t = f"{t}周末"
+        if _effective_len(t) >= min_len:
+            return t
+
+    hint = str(location_hint or "").strip()
+    if hint and hint not in t:
+        rm_match = re.search(r"rm\s*\d+", t, re.IGNORECASE)
+        if rm_match:
+            t = f"{t[:rm_match.end()]}{hint}{t[rm_match.end():]}"
+        else:
+            t = f"{hint}{t}"
+        if _effective_len(t) >= min_len:
+            return t
+
+    utility_tokens = ["避坑", "预算", "路线", "省钱"]
+    if not any(token in t for token in utility_tokens):
+        t = f"{t}{utility_tokens[0]}"
+
+    if _effective_len(t) > 18:
+        t = _compress_title_to_range(t, 14, 18)
+
+    return t or "旅行不踩雷清单"
 
 
 async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict]:
@@ -899,11 +943,14 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
                 return False, f"item#{i} has empty fields", []
             effective_len = _effective_len(title)
             if effective_len < 14 or effective_len > 18:
-                fixed_title = _compress_title_to_range(title, 14, 18)
+                if effective_len < 14:
+                    fixed_title = _expand_title_to_min(title, region, location_hint, 14)
+                else:
+                    fixed_title = _compress_title_to_range(title, 14, 18)
                 fixed_len = _effective_len(fixed_title)
                 if fixed_title != title:
                     log.warning(
-                        "auto-compressed title item#%s: before='%s'(%s) -> after='%s'(%s)",
+                        "auto-fixed title item#%s: before='%s'(%s) -> after='%s'(%s)",
                         i,
                         title,
                         effective_len,
@@ -914,11 +961,14 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
                     title = fixed_title
                     effective_len = fixed_len
                 if effective_len < 14 or effective_len > 18:
-                    final_title = _compress_title_to_range(title, 14, 18)
+                    if effective_len < 14:
+                        final_title = _expand_title_to_min(title, region, location_hint, 14)
+                    else:
+                        final_title = _compress_title_to_range(title, 14, 18)
                     final_len = _effective_len(final_title)
                     if final_title != title:
                         log.warning(
-                            "hard-trimmed title item#%s: before='%s'(%s) -> after='%s'(%s)",
+                            "hard-fixed title item#%s: before='%s'(%s) -> after='%s'(%s)",
                             i,
                             title,
                             effective_len,
