@@ -74,6 +74,8 @@ MEMORY_SKILL_FILES = {"performance_log.md", "failure_log.md", "series_registry.m
 MY_LOCAL_KEYWORDS = ["马来西亚", "大马", "malaysia", "my", "kl", "吉隆坡", "雪兰莪", "森美兰", "槟城", "怡保", "马六甲", "金马仑", "波德申", "云顶", "东海岸"]
 OVERSEAS_KEYWORDS = ["日本", "韩国", "欧洲", "美国", "泰国", "越南", "巴厘", "新加坡"]
 DEFAULT_REGIONS_POOL = ["penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"]
+SCRIPT_MODE_DEFAULT = "default"
+SCRIPT_MODE_STAYCATION_ANALYSIS = "staycation_analysis"
 
 if not TG_TOKEN or not OPENAI_API_KEY or not APPROVAL_CHAT_ID:
     raise RuntimeError("Missing env: TELEGRAM_BOT_TOKEN / OPENAI_API_KEY / APPROVAL_CHAT_ID")
@@ -1130,11 +1132,51 @@ def approval_keyboard(content_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 
-def build_script_prompt(title: str, region: str, location_hint: str, loaded_skill_texts: list[tuple[str, str]]) -> str:
+def build_script_prompt(title: str, region: str, location_hint: str, loaded_skill_texts: list[tuple[str, str]], script_mode: str = SCRIPT_MODE_DEFAULT) -> str:
     skill_blocks = []
     for name, text in loaded_skill_texts:
         skill_blocks.append(f"[RULES FILE: {name}]\n{text}")
     skills_text = "\n\n".join(skill_blocks)
+    if script_mode == SCRIPT_MODE_STAYCATION_ANALYSIS:
+        return (
+            "请生成1条完整小红书旅行脚本。严格按以下格式输出，标题和顺序不能变：\n\n"
+            "🎬 POST SCRIPT\n"
+            "Hook\n"
+            "<...>\n\n"
+            "正文\n"
+            "<...>\n\n"
+            "Save trigger\n"
+            "<...>\n\n"
+            "✍️ CAPTION\n"
+            "<...>\n\n"
+            "🏷 HASHTAGS\n"
+            "<...>\n\n"
+            "💡 VISUAL SHOTLIST\n"
+            "- Shot 1:\n"
+            "- Shot 2:\n"
+            "- Shot 3:\n"
+            "- Shot 4:\n"
+            "- Shot 5:\n\n"
+            "本模式: STAYCATION_ANALYSIS（森林 staycation / forest airbnb / cabin / jungle retreat / KL 1–2小时逃离）\n"
+            "硬性规则:\n"
+            "- 内容必须是分析/对比/判断风格，目标是制造讨论和决策价值。\n"
+            "- POV诚实：可以写“我整理了常见踩雷点/普遍情况/常见反馈/很多人分享过的常见问题”；禁止写“我昨晚睡不好/我住过这间/我check-in/我半夜醒/我入住”。\n"
+            "- 必须有至少1句反常识冲突：很多人以为…但其实… / 你以为…其实… / 本来以为…结果…。\n"
+            "- 必须覆盖至少3个隐形成本/决策因素：周末溢价或价差、交通与最后一段路、蚊子/没signal/水压/噪音/潮湿预期、清洁费/押金/toll/油钱/食材BBQ等额外成本。\n"
+            "- 必须给出清晰结论：适合谁/不适合谁，并明确“值不值取决于…”。\n"
+            "- 结尾最后2-3行必须有评论触发问题，例如“你住过森林Airbnb吗？值不值？”。\n"
+            "- 允许给标题参考方向，但不要原样照抄以下范式：\n"
+            "  1) 为什么很多人住森林Airbnb反而更累？\n"
+            "  2) 周末森林staycation值不值？先算清3个隐形成本\n"
+            "  3) 你以为森林很chill，其实最累的是…\n"
+            "  4) KL 1–2小时森林Airbnb：适合谁，不适合谁\n"
+            "  5) 森林木屋不是越贵越值：看这3个指标\n"
+            "  6) 4人share森林Airbnb真的省？别忘了这几笔钱\n"
+            f"- 题目: {title}\n"
+            f"- region: {region}\n"
+            f"- location_hint: {location_hint}\n\n"
+            f"参考规则:\n{skills_text}"
+        )
     return (
         "请生成1条完整小红书旅行脚本。严格按以下格式输出，标题和顺序不能变：\n\n"
         "🎬 POST SCRIPT\n"
@@ -1171,6 +1213,15 @@ def build_script_prompt(title: str, region: str, location_hint: str, loaded_skil
         f"- location_hint: {location_hint}\n\n"
         f"参考规则:\n{skills_text}"
     )
+
+
+def _detect_script_mode(title: str, location_hint: str) -> str:
+    merged = f"{title} {location_hint}".lower()
+    staycation_intent = any(k in merged for k in ["staycation", "airbnb", "forest airbnb", "jungle retreat", "cabin", "木屋", "玻璃屋", "度假屋", "airbnb staycation", "forest staycation", "森林staycation", "森林 airbnb", "森林airbnb"])
+    forest_context = any(k in merged for k in ["forest", "jungle", "雨林", "山林", "森林", "溪边", "木屋", "cabin"])
+    if staycation_intent and forest_context:
+        return SCRIPT_MODE_STAYCATION_ANALYSIS
+    return SCRIPT_MODE_DEFAULT
 
 
 def _validate_script_structure(script_text: str) -> tuple[bool, str]:
@@ -1231,6 +1282,55 @@ def _validate_script_structure(script_text: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _validate_staycation_analysis(script_text: str) -> tuple[bool, str]:
+    text = (script_text or "").strip()
+    if not text:
+        return False, "missing_analysis_pov"
+
+    lowered = text.lower()
+    banned_en = ["check in", "checkout"]
+    banned_zh = ["我住", "我入住", "昨晚", "半夜醒", "我这次住", "睡到", "醒来", "实测水压", "我们住", "入住当天"]
+    if any(k in lowered for k in banned_en) or any(k in text for k in banned_zh):
+        return False, "false_first_person_stay"
+
+    analysis_cues = ["整理", "很多人反映", "评论区", "常见", "踩雷", "对比", "总结", "普遍", "反馈", "分享过"]
+    if not any(k in text for k in analysis_cues):
+        return False, "missing_analysis_pov"
+
+    has_contrarian = (
+        ("很多人以为" in text and (("但其实" in text) or ("其实" in text)))
+        or ("你以为" in text and "其实" in text)
+        or ("本来以为" in text and (("结果" in text) or ("但" in text)))
+    )
+    if not has_contrarian:
+        return False, "no_contrarian"
+
+    decision_score = 0
+    if any(k in text for k in ["周末", "溢价", "平日", "价差", "RM", "一晚"]):
+        decision_score += 1
+    if any(k in text for k in ["车程", "山路", "窄路", "下雨", "最后那段路", "没灯", "停车"]):
+        decision_score += 1
+    if any(k in text for k in ["蚊子", "没signal", "水压", "隔音", "潮湿", "热", "动物声音", "噪音"]):
+        decision_score += 1
+    if any(k in text for k in ["清洁费", "押金", "toll", "油钱", "食材", "BBQ", "杂费"]):
+        decision_score += 1
+    if decision_score < 3:
+        return False, "missing_decision_factors"
+
+    if "适合" not in text or "不适合" not in text:
+        return False, "missing_fit_filter"
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    tail = "\n".join(lines[-3:])
+    if not tail:
+        return False, "missing_comment_trigger"
+    comment_cues = ["你觉得", "你住过", "值不值", "会不会", "你选哪一个"]
+    if "？" not in tail and not any(k in tail for k in comment_cues):
+        return False, "missing_comment_trigger"
+
+    return True, "ok"
+
+
 def _split_script_for_telegram(script_text: str, limit: int = 3500) -> list[str]:
     sections = [x for x in re.split(r"\n(?=🎬 POST SCRIPT|✍️ CAPTION|🏷 HASHTAGS|💡 VISUAL SHOTLIST)", script_text.strip()) if x]
     if not sections:
@@ -1279,11 +1379,13 @@ async def _generate_selected_scripts(app: Application, content_id: str, draft: d
         if str(idx) in scripts:
             continue
         item = draft["items"][idx - 1]
+        script_mode = _detect_script_mode(item.get("title", "").strip(), item.get("location_hint", "").strip())
         prompt = build_script_prompt(
             item.get("title", "").strip(),
             item.get("region", "").strip(),
             item.get("location_hint", "").strip(),
             skill_pairs,
+            script_mode,
         )
         script_text = ""
         validate_reason = "timeline_incomplete"
@@ -1306,7 +1408,10 @@ async def _generate_selected_scripts(app: Application, content_id: str, draft: d
             )
             script_text = (resp.choices[0].message.content or "").strip()
             validation_text = f"题目: {item.get('title', '').strip()}\n{script_text}"
-            valid, validate_reason = _validate_script_structure(validation_text)
+            if script_mode == SCRIPT_MODE_STAYCATION_ANALYSIS:
+                valid, validate_reason = _validate_staycation_analysis(validation_text)
+            else:
+                valid, validate_reason = _validate_script_structure(validation_text)
             if valid:
                 break
             if attempt < 3:
