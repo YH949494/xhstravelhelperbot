@@ -921,14 +921,42 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
         "5) 每条标题14-18个中文字符。\n"
         "5.1) 若包含英文/数字，长度按中文字符+英文数字词组补偿计算后仍需在14-18。\n"
         "6) 每条标题必须包含可搜索的具体地点名，不能只写州名/大区。\n"
-        "7) 风格配比: 第一人称2条、价格/冲突2条、时间/条件1条。\n"
-        "8) 禁止海外目的地。"
+        "7) 结构配比：5条标题必须尽量结构不同：第一人称/劝退冲突/误区揭秘/时间最佳/价格拆解 至少覆盖4类。\n"
+        "8) 最多1条以 RM 开头，其余把 RM 放中间或结尾，或用时间/冲突开头；禁止多个标题重复同类前缀模式（如 RM150...）。\n"
+        "9) 避免每条都带 周末 / 避坑，周末最多出现2次，避坑最多出现2次。\n"
+        "10) 禁止海外目的地。"
     )
 
     banned_generic = {"好去处", "攻略", "推荐"}
     region_words = {region_a.lower(), region_b.lower(), "penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"}
 
     def _validate_items(items: Any) -> tuple[bool, str, list[dict]]:
+        def _classify_title_archetype(title: str) -> str:
+            t = title or ""
+            conflict_stop = ["别", "不要", "千万别", "别去", "别买", "别选", "劝退", "后悔", "血亏", "踩雷", "避坑"]
+            myth_buster = ["90%", "大多数", "很多人", "原来", "真相", "你以为", "其实", "才知道", "误区", "揭秘", "隐藏"]
+            time_best = ["几点", "早上", "下午", "傍晚", "晚上", "周六", "周日", "最佳", "最舒服", "不排队", "人最少", "避开"]
+            first_person = ["我在", "我用", "我把", "我第一次", "亲测", "实测", "踩点", "我去"]
+            if any(k in t for k in conflict_stop):
+                return "conflict_stop"
+            if any(k in t for k in myth_buster):
+                return "myth_buster"
+            if any(k in t for k in time_best):
+                return "time_best"
+            price_breakdown_regex = re.compile(r"(RM\s*\d+).*(票|门票|停车|Grab|车费|餐|吃|总共|预算|花费|消费)", re.IGNORECASE)
+            if price_breakdown_regex.search(t) or len(re.findall(r"\d+", t)) >= 2:
+                return "price_breakdown"
+            if any(k in t for k in first_person):
+                return "first_person"
+            return "other"
+
+        def _normalize_title_for_prefix_check(title: str) -> str:
+            t = (title or "").lower()
+            t = re.sub(r"rm\s*\d+", "rm<n>", t, flags=re.IGNORECASE)
+            t = re.sub(r"\d+", "<n>", t)
+            t = re.sub(r"[\s\W_]+", "", t)
+            return t
+
         if not isinstance(items, list) or len(items) != 5:
             return False, "items must be list of 5", []
         seen_regions = set()
@@ -1006,6 +1034,25 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
             return False, "too many items lack concrete location signal", []
         if region_a not in seen_regions or region_b not in seen_regions:
             return False, "items do not cover both regions", []
+
+        archetypes = [_classify_title_archetype(str(it.get("title", ""))) for it in valid_items]
+        archetype_set = set(archetypes)
+        if len(archetype_set) < 4:
+            return False, "insufficient_title_diversity", []
+        if "first_person" not in archetype_set:
+            return False, "insufficient_title_diversity", []
+        if "conflict_stop" not in archetype_set and "myth_buster" not in archetype_set:
+            return False, "insufficient_title_diversity", []
+
+        prefix_counts: dict[str, int] = {}
+        for it in valid_items:
+            norm = _normalize_title_for_prefix_check(str(it.get("title", "")))
+            prefix = norm[:6]
+            if not prefix:
+                continue
+            prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+        if any(count >= 3 for count in prefix_counts.values()):
+            return False, "repetitive_prefix_pattern", []
         return True, "ok", valid_items
 
     def _request_items(user_prompt: str) -> tuple[list[dict] | None, str]:
@@ -1075,8 +1122,10 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
                 "5) 每条标题14-18个中文字符。\n"
                 "5.1) 若包含英文/数字，长度按中文字符+英文数字词组补偿计算后仍需在14-18。\n"
                 "6) 每条标题必须包含可搜索的具体地点名，不能只写州名/大区。\n"
-                "7) 风格配比: 第一人称2条、价格/冲突2条、时间/条件1条。\n"
-                "8) 禁止海外目的地。"
+                "7) 结构配比：5条标题必须尽量结构不同：第一人称/劝退冲突/误区揭秘/时间最佳/价格拆解 至少覆盖4类。\n"
+                "8) 最多1条以 RM 开头，其余把 RM 放中间或结尾，或用时间/冲突开头；禁止多个标题重复同类前缀模式（如 RM150...）。\n"
+                "9) 避免每条都带 周末 / 避坑，周末最多出现2次，避坑最多出现2次。\n"
+                "10) 禁止海外目的地。"
             )
             refill_items, refill_err = _request_items(refill_prompt)
             if refill_items is None:
