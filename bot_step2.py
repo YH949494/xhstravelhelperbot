@@ -76,6 +76,35 @@ OVERSEAS_KEYWORDS = ["日本", "韩国", "欧洲", "美国", "泰国", "越南",
 DEFAULT_REGIONS_POOL = ["penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"]
 SCRIPT_MODE_DEFAULT = "default"
 SCRIPT_MODE_STAYCATION_ANALYSIS = "staycation"
+KV_STAYCATION_SPOTS = [
+    # Hulu Langat / Cheras
+    "Aman Dusun Farm Retreat",
+    "Tanah Larwina",
+    "Nouri Glass Villa",
+    "Santika Hulu Langat",
+    "Tirtha Quddus",
+    "Forest Valley Homestay Bungalow",
+    "Far Far Away",
+    # Rawang / Serendah
+    "Sekeping Serendah",
+    "Templer Park Rainforest Retreat",
+    "Glassbox Serendah",
+    "LilyJo’s Treehouse",
+    "Warehouse 2 @ Serendah",
+    "Carpe Diem Orchard Home",
+    # Ampang / KL / PJ
+    "Bukit Tabur Retreat",
+    "Flame of the Forest Retreat",
+    "Tamerin Nest",
+    # Batu Caves / Gombak / Batang Kali / Hulu Yam
+    "Holistay Forest Villa",
+    "Ratu Rening Residency",
+    "Villa Ijo",
+]
+KV_AREAS = [
+    "Kuala Lumpur", "Petaling Jaya", "Hulu Langat", "Rawang", "Serendah", "Ampang",
+    "Cheras", "Gombak", "Batu Caves", "Batang Kali", "Hulu Yam", "Seputeh",
+]
 
 if not TG_TOKEN or not OPENAI_API_KEY or not APPROVAL_CHAT_ID:
     raise RuntimeError("Missing env: TELEGRAM_BOT_TOKEN / OPENAI_API_KEY / APPROVAL_CHAT_ID")
@@ -194,6 +223,17 @@ def _hook_validation_reason(title: str) -> tuple[bool, str]:
     if any(k in t for k in ["分享", "合集", "推荐", "攻略"]) and not has_tension:
         return False, "generic_filler_without_tension"
     return True, "ok"
+
+
+def _normalize_text(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("’", "'").replace("‘", "'")
+    return s.lower()
+
+
+def _pick_kv_hotspot_for_day(now: datetime) -> str:
+    return KV_STAYCATION_SPOTS[now.timetuple().tm_yday % len(KV_STAYCATION_SPOTS)]
 
 
 def append_failure_log_line(title: str, reason: str, skills_dir: str = "skills") -> None:
@@ -909,23 +949,35 @@ def _expand_title_to_min(title: str, region: str, location_hint: str, min_len: i
 
 
 async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict]:
+    now = datetime.now(tzinfo)
+    kv_spot = _pick_kv_hotspot_for_day(now)
     prompt = (
         "你是小红书马来西亚旅行标题编辑。\n"
+        "今日输出主题：Klang Valley nature staycation Airbnbs only。\n"
         "输出5条标题候选，必须覆盖两个地区。\n"
         f"今日地区: {region_a}, {region_b}\n"
+        f"本日唯一热点（必须所有location_hint完全等于此值）: {kv_spot}\n"
         "Staycation-first要求:\n"
-        "- 5条里至少3条必须是森林staycation / cabin / nature retreat相关。\n"
-        "- 剩余2条可为其他本地旅行，但必须具体且有决策价值。\n"
-        "- staycation标题必须至少包含以下决策词之一：值不值 / 避雷 / 不踩坑 / 真实体验 / 适合谁 / 别期待太多 / 预算拆解。\n"
-        "- staycation标题必须包含价格锚点RMxxx，或时长锚点（1晚/2天1夜）。\n"
+        "- 5条都必须是Klang Valley staycation相关（不是路线/打卡清单）。\n"
+        f"- 每条必须在title或location_hint出现且只使用以下热点名之一（优先放在location_hint）: {', '.join(KV_STAYCATION_SPOTS)}。\n"
+        "- 所有5条的location_hint必须完全相同且等于本日唯一热点。\n"
+        "- 标题不得出现其他热点名（只能围绕本日唯一热点）。\n"
+        "- 5条标题必须分别对应以下5个角度，每个角度只能用一次：\n"
+        "  1) 值不值/结论型（含RM或1晚）\n"
+        "  2) 避雷/隐藏成本（虫/湿/信号/路况/隔音等）\n"
+        "  3) 适合谁/不适合谁（人群筛选）\n"
+        "  4) 对比型（vs KL酒店/城市住宿/同价位）\n"
+        "  5) 预算拆解（费用结构/清洁费/押金/油钱toll等）\n"
+        "- 每条标题必须至少包含以下决策词之一：值不值 / 避雷 / 别期待太多 / 真实体验 / 适合谁 / 不适合谁 / 隐藏成本 / 虫多吗 / 信号 / 隔音 / 路况。\n"
+        "- 每条标题必须包含价格锚点RM，或时长锚点（1晚/2天1夜）。\n"
         "- staycation标题禁用空泛词：小众秘境 / 超治愈 / 绝美 / 氛围感拉满 / 宝藏 / 天花板 / 必须去。\n"
+        f"- 可用区域参考：{', '.join(KV_AREAS)}。\n"
         "参考示例（仅示例，输出仍必须是JSON）：\n"
-        "- RM350住Janda Baik森林木屋值不值\n"
-        "- Sekinchan附近Cabin真实体验避雷点\n"
-        "- RM280云顶山里小屋适合谁住\n"
-        "- Hulu Langat森林staycation别期待太多\n"
-        "- Fraser Hill木屋1晚预算拆解\n"
-        "- Bentong森林度假屋虫多吗避坑\n"
+        f"- RM350住{kv_spot}值不值\n"
+        f"- {kv_spot}避雷：虫/湿/信号别期待太多\n"
+        f"- {kv_spot}适合谁？不适合谁？\n"
+        f"- {kv_spot}vs KL酒店：你以为更chill其实更累？\n"
+        f"- {kv_spot}1晚预算拆解：隐藏费用在哪\n"
         "硬性要求:\n"
         "1) 仅输出JSON，格式为 {\"items\":[...]}。\n"
         "2) items长度必须为5。\n"
@@ -943,11 +995,22 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
     banned_generic = {"好去处", "攻略", "推荐"}
     staycation_keywords = [
         "staycation", "cabin", "villa", "resort", "glamping", "airbnb", "forest", "jungle",
-        "森林", "木屋", "露营", "树屋", "度假屋", "小屋", "帐篷",
+        "森林", "木屋", "露营", "树屋", "度假屋", "小屋", "营地",
     ]
     region_words = {region_a.lower(), region_b.lower(), "penang", "genting", "melaka", "selangor", "kl", "perak", "johor", "sabah"}
 
     def _validate_items(items: Any) -> tuple[bool, str, list[dict]]:
+        def _is_kv_spot_hit(title: str, location_hint: str) -> bool:
+            t = str(title or "")
+            h = str(location_hint or "")
+            t_norm = _normalize_text(t)
+            h_norm = _normalize_text(h)
+            for spot in KV_STAYCATION_SPOTS:
+                s_norm = _normalize_text(spot)
+                if s_norm in t_norm or s_norm in h_norm:
+                    return True
+            return False
+
         def _classify_title_archetype(title: str) -> str:
             t = title or ""
             conflict_stop = ["别", "不要", "千万别", "别去", "别买", "别选", "劝退", "后悔", "血亏", "踩雷", "避坑"]
@@ -980,6 +1043,7 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
         location_signal_fails = 0
         valid_items: list[dict] = []
         invalid_count = 0
+        kv_spot_hit_count = 0
         for i, it in enumerate(items, start=1):
             if not isinstance(it, dict):
                 return False, f"item#{i} must be object", []
@@ -1030,7 +1094,10 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
             location_keywords = ["Hotel", "Resort", "Cabin", "Airbnb", "Forest", "Villa", "Homestay"]
             has_upper_word = bool(re.search(r"\b[A-Z][a-zA-Z]+\b", title))
             has_location_kw = any(k in title for k in location_keywords)
-            if not has_upper_word and not has_location_kw:
+            has_kv_anchor = _is_kv_spot_hit(title, location_hint)
+            if has_kv_anchor:
+                kv_spot_hit_count += 1
+            if not has_upper_word and not has_location_kw and not has_kv_anchor:
                 location_signal_fails += 1
             if region not in {region_a, region_b}:
                 return False, f"item#{i} region invalid", []
@@ -1047,16 +1114,44 @@ async def generate_5_title_candidates(region_a: str, region_b: str) -> list[dict
             valid_items.append(it)
         if invalid_count > 0 and len(valid_items) < 5:
             return False, "needs_refill", valid_items
+        if kv_spot_hit_count < 5:
+            return False, "missing_kv_hotspot_anchor", []
+        location_hints = [str(it.get("location_hint", "")).strip() for it in valid_items]
+        if len(set(location_hints)) != 1:
+            return False, "matrix_hotspot_not_single", []
+        matrix_keywords = {
+            "worth_it": ["值不值", "到底值吗", "划算吗"],
+            "pitfalls": ["避雷", "隐藏成本", "别期待太多", "虫", "信号", "隔音", "路况", "湿"],
+            "fit_filter": ["适合谁", "不适合谁", "适合情侣", "适合亲子", "适合朋友"],
+            "comparison": ["vs", "对比", "比起", "不如", "pk"],
+            "budget": ["预算拆解", "费用", "花费", "清洁费", "押金", "toll", "油钱"],
+        }
+        matrix_counts = {k: 0 for k in matrix_keywords}
+        for it in valid_items:
+            t_raw = str(it.get("title", ""))
+            t_norm = _normalize_text(t_raw)
+            if any(k in t_norm for k in matrix_keywords["worth_it"]):
+                matrix_counts["worth_it"] += 1
+            if any(k in t_norm for k in matrix_keywords["pitfalls"]):
+                matrix_counts["pitfalls"] += 1
+            if any(k in t_norm for k in matrix_keywords["fit_filter"]):
+                matrix_counts["fit_filter"] += 1
+            if any(k in t_norm for k in matrix_keywords["comparison"]):
+                matrix_counts["comparison"] += 1
+            if any(k in t_norm for k in matrix_keywords["budget"]):
+                matrix_counts["budget"] += 1
+        if any(v < 1 for v in matrix_counts.values()) or any(v > 2 for v in matrix_counts.values()):
+            return False, "matrix_missing_archetype", []
         if location_signal_fails > 1:
             return False, "too many items lack concrete location signal", []
         if region_a not in seen_regions or region_b not in seen_regions:
             return False, "items do not cover both regions", []
         staycation_count = 0
         for it in valid_items:
-            t = str(it.get("title", "")).lower()
+            t = f"{str(it.get('title', ''))} {str(it.get('location_hint', ''))}".lower()
             if any(k in t for k in staycation_keywords):
                 staycation_count += 1
-        if staycation_count < 3:
+        if staycation_count < 4:
             return False, "insufficient_staycation_coverage", []
 
         archetypes = [_classify_title_archetype(str(it.get("title", ""))) for it in valid_items]
@@ -1212,8 +1307,6 @@ def build_script_prompt(title: str, region: str, location_hint: str, loaded_skil
         skill_blocks.append(f"[RULES FILE: {name}]\n{text}")
     skills_text = "\n\n".join(skill_blocks)
     mode = _detect_script_mode(title, location_hint)
-    if script_mode == SCRIPT_MODE_STAYCATION_ANALYSIS:
-        mode = script_mode
     if mode == SCRIPT_MODE_STAYCATION_ANALYSIS:
         return (
             "请生成1条完整小红书旅行脚本。严格按以下格式输出，标题和顺序不能变：\n\n"
@@ -1234,11 +1327,18 @@ def build_script_prompt(title: str, region: str, location_hint: str, loaded_skil
             "- Shot 3:\n"
             "- Shot 4:\n"
             "- Shot 5:\n\n"
+            "Staycation must include:\n"
+            "- Exact booking anchor: MUST mention the hotspot name（前5行必须原样包含location_hint）。\n"
+            "- Must include at least 3 hidden costs/limitations from: insects, humidity, signal/wifi, road access, noise, weak AC, food availability, parking, check-in friction, safety lighting at night.\n"
+            "- Must include \"适合谁 / 不适合谁\" with at least 2 bullets each.\n"
+            "- Must include one explicit downside + expectation management at end.\n"
+            "- Must NOT write night market / food stall checklist as mandatory.\n"
             "Staycation模式补充规则（森林 staycation / cabin / nature retreat）：\n"
             "- 内容核心必须围绕：值不值 + 适合谁/不适合谁 + 隐藏成本/限制。\n"
             "- 必须至少写出3个隐藏成本/限制因素（例如：虫、湿、信号、路况、噪音、隔音、餐饮、停车、check-in流程）。\n"
             "- 必须包含一个明确缺点，并在结尾做预期管理（什么人别期待太多）。\n"
             "- 禁止把夜市/路边摊拆解当成必选结构（那是路线型内容，不适用于staycation）。\n"
+            "- staycation模式必须出现且重复至少2次 location_hint（确保可搜/可订）。\n"
             "- 仍然必须包含：1个具体地点（优先location_hint）、3个可拍细节、1个人物元素。\n"
             "本模式: STAYCATION_ANALYSIS（森林 staycation / forest airbnb / cabin / jungle retreat / KL 1–2小时逃离）\n"
             "硬性规则:\n"
@@ -1300,6 +1400,10 @@ def build_script_prompt(title: str, region: str, location_hint: str, loaded_skil
 
 def _detect_script_mode(title: str, location_hint: str) -> str:
     merged = f"{title} {location_hint}".lower()
+    merged_norm = _normalize_text(merged)
+    for spot in KV_STAYCATION_SPOTS:
+        if _normalize_text(spot) in merged_norm:
+            return SCRIPT_MODE_STAYCATION_ANALYSIS
     staycation_keywords = [
         "staycation", "cabin", "villa", "resort", "glamping", "treehouse", "camp", "airbnb", "forest", "jungle",
         "森林", "木屋", "山里", "露营", "营地", "泡汤", "温泉", "度假屋", "小屋", "帐篷", "树屋", "湖景", "山景",
